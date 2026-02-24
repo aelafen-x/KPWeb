@@ -1,5 +1,5 @@
 import { DateTime } from "luxon";
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AppHeader } from "../components/AppHeader";
 import { LineResolver } from "../components/LineResolver";
@@ -10,19 +10,14 @@ import { createParserLookup, isTimestampLineStart, parseLine } from "../lib/pars
 import {
   SheetsClient,
   appendRows,
-  loadAliases,
-  loadAllowlistEmails,
-  loadBosses,
-  loadConfig,
-  loadUsersFromRange,
-  loadWeekBossBreakdownRaw,
-  loadWeekUserTotalsRaw,
-  loadWeeks,
+  loadSetupBundle,
+  loadWeekStorageBundle,
   replaceTabRows
 } from "../lib/sheets";
 import { getBrowserTimezone, toWeekId, weekBoundsFromUtcSunday } from "../lib/week";
 import { useAppContext } from "../store/AppContext";
 import type { BossConfig, ParsedLine, WeekSummaryRow } from "../types";
+import type { SetupBundle } from "../lib/sheets";
 
 type HistoricalTotal = {
   weekId: string;
@@ -96,6 +91,12 @@ export function WizardPage(): JSX.Element {
   const [storedWeeks, setStoredWeeks] = useState<string[]>([]);
   const [selectedStoredWeek, setSelectedStoredWeek] = useState("");
   const [autoLoadAttempted, setAutoLoadAttempted] = useState(false);
+  const ensuredSheetsRef = useRef<Set<string>>(new Set());
+  const setupCacheRef = useRef<{
+    key: string;
+    loadedAt: number;
+    data: SetupBundle;
+  } | null>(null);
 
   const timezoneOptions = useMemo(() => makeTimezoneOptions(), []);
 
@@ -169,38 +170,60 @@ export function WizardPage(): JSX.Element {
     return indexes;
   }
 
-  async function loadSetupData(): Promise<{
-    users: string[];
-    loadedBosses: BossConfig[];
-    loadedBossAliases: Array<{ alias: string; canonical: string }>;
-    loadedNameAliases: Array<{ alias: string; canonical: string }>;
-  }> {
+  function applySetupBundle(loaded: SetupBundle): void {
+    setCanonicalUsers(loaded.users);
+    setBosses(loaded.bosses);
+    setBossAliases(loaded.bossAliases);
+    setNameAliases(loaded.nameAliases);
+    setConfig(loaded.config);
+    setStoredWeeks(loaded.weeks.map((week) => week.weekId).sort((a, b) => b.localeCompare(a)));
+  }
+
+  async function loadSetupData(forceRefresh = false): Promise<SetupBundle> {
     if (!usersSpreadsheetId.trim() || !usersRange.trim() || !dataSpreadsheetId.trim()) {
       throw new Error("Users Spreadsheet ID, Users Range, and Data Spreadsheet ID are required.");
     }
+    const cacheKey = `${usersSpreadsheetId.trim()}|${usersRange.trim()}|${dataSpreadsheetId.trim()}`;
+    const cached = setupCacheRef.current;
+    if (
+      !forceRefresh &&
+      cached &&
+      cached.key === cacheKey &&
+      Date.now() - cached.loadedAt < 180000
+    ) {
+      applySetupBundle(cached.data);
+      if (rawLines.length > 0) {
+        setParsedLines(
+          parseCurrentFile(
+            rawLines,
+            cached.data.users,
+            cached.data.bosses,
+            cached.data.nameAliases,
+            cached.data.bossAliases
+          )
+        );
+      }
+      return cached.data;
+    }
+
     const client = new SheetsClient(accessToken);
-    await client.ensureSchema(dataSpreadsheetId.trim());
-    const [users, loadedBosses, loadedBossAliases, loadedNameAliases, loadedConfig, weeks, allowlist] =
-      await Promise.all([
-      loadUsersFromRange(client, usersSpreadsheetId.trim(), usersRange.trim()),
-      loadBosses(client, dataSpreadsheetId.trim()),
-      loadAliases(client, dataSpreadsheetId.trim(), "BossAliases"),
-      loadAliases(client, dataSpreadsheetId.trim(), "NameAliases"),
-      loadConfig(client, dataSpreadsheetId.trim()),
-      loadWeeks(client, dataSpreadsheetId.trim()),
-      loadAllowlistEmails(client, dataSpreadsheetId.trim())
-    ]);
-    if (allowlist.length > 0 && !allowlist.includes(authEmail)) {
+    const normalizedDataSheetId = dataSpreadsheetId.trim();
+    if (!ensuredSheetsRef.current.has(normalizedDataSheetId)) {
+      await client.ensureSchema(normalizedDataSheetId);
+      ensuredSheetsRef.current.add(normalizedDataSheetId);
+    }
+    const loaded = await loadSetupBundle(
+      client,
+      usersSpreadsheetId.trim(),
+      usersRange.trim(),
+      normalizedDataSheetId
+    );
+    if (loaded.allowlist.length > 0 && !loaded.allowlist.includes(authEmail)) {
       throw new Error("Your account is not in the Allowlist tab for this data sheet.");
     }
-    setCanonicalUsers(users);
-    setBosses(loadedBosses);
-    setBossAliases(loadedBossAliases);
-    setNameAliases(loadedNameAliases);
-    setConfig(loadedConfig);
-    setStoredWeeks(weeks.map((week) => week.weekId).sort((a, b) => b.localeCompare(a)));
+    applySetupBundle(loaded);
     if (rawLines.length > 0) {
-      setParsedLines(parseCurrentFile(rawLines, users, loadedBosses, loadedNameAliases, loadedBossAliases));
+      setParsedLines(parseCurrentFile(rawLines, loaded.users, loaded.bosses, loaded.nameAliases, loaded.bossAliases));
     }
     setSetup({
       weekStartUtcDate,
@@ -209,12 +232,12 @@ export function WizardPage(): JSX.Element {
       usersRange,
       dataSpreadsheetId
     });
-    return {
-      users,
-      loadedBosses,
-      loadedBossAliases,
-      loadedNameAliases
+    setupCacheRef.current = {
+      key: cacheKey,
+      loadedAt: Date.now(),
+      data: loaded
     };
+    return loaded;
   }
 
   async function onFileChange(event: ChangeEvent<HTMLInputElement>): Promise<void> {
@@ -282,11 +305,13 @@ export function WizardPage(): JSX.Element {
   async function persistAlias(tab: "BossAliases" | "NameAliases", alias: string, canonical: string): Promise<void> {
     const client = new SheetsClient(accessToken);
     await appendRows(client, dataSpreadsheetId, tab, [[alias, canonical]]);
+    setupCacheRef.current = null;
   }
 
   async function persistBoss(boss: string, points: number): Promise<void> {
     const client = new SheetsClient(accessToken);
     await appendRows(client, dataSpreadsheetId, "Bosses", [[boss, String(points)]]);
+    setupCacheRef.current = null;
   }
 
   async function handleAddNameAlias(aliasToken: string, canonicalName: string): Promise<void> {
@@ -377,11 +402,7 @@ export function WizardPage(): JSX.Element {
 
   async function saveWeeklyData(weekId: string, rows: WeekSummaryRow[]): Promise<WeekSummaryRow[]> {
     const client = new SheetsClient(accessToken);
-    const [weeks, totalsRaw, breakdownRaw] = await Promise.all([
-      loadWeeks(client, dataSpreadsheetId),
-      loadWeekUserTotalsRaw(client, dataSpreadsheetId),
-      loadWeekBossBreakdownRaw(client, dataSpreadsheetId)
-    ]);
+    const { weeks, totalsRaw, breakdownRaw } = await loadWeekStorageBundle(client, dataSpreadsheetId);
     const weekExists = weeks.some((week) => week.weekId === weekId);
     if (weekExists) {
       const shouldOverwrite = window.confirm(`Week ${weekId} already exists. Overwrite?`);
@@ -484,6 +505,7 @@ export function WizardPage(): JSX.Element {
     ]);
 
     setStoredWeeks(updatedWeeks.map((week) => week.weekId).sort((a, b) => b.localeCompare(a)));
+    setupCacheRef.current = null;
 
     const streakMap = new Map<string, number>();
     for (const row of historical) {
@@ -556,9 +578,9 @@ export function WizardPage(): JSX.Element {
       const reparsed = parseCurrentFile(
         rawLines,
         loaded.users,
-        loaded.loadedBosses,
-        loaded.loadedNameAliases,
-        loaded.loadedBossAliases
+        loaded.bosses,
+        loaded.nameAliases,
+        loaded.bossAliases
       );
       setParsedLines(reparsed);
       setDiscardedLines(new Set());
@@ -584,10 +606,7 @@ export function WizardPage(): JSX.Element {
     try {
       setBusy(true);
       const client = new SheetsClient(accessToken);
-      const [totalsRaw, breakdownRaw] = await Promise.all([
-        loadWeekUserTotalsRaw(client, dataSpreadsheetId),
-        loadWeekBossBreakdownRaw(client, dataSpreadsheetId)
-      ]);
+      const { totalsRaw, breakdownRaw } = await loadWeekStorageBundle(client, dataSpreadsheetId);
       const totals = totalsRaw.filter((row) => row[0] === weekId);
       const breakdown = breakdownRaw.filter((row) => row[0] === weekId);
       const bossSet = new Set<string>();

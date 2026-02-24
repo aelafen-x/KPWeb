@@ -229,6 +229,69 @@ button:disabled {
   overflow: auto;
 }
 
+.admin-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.admin-section {
+  border: 1px solid #9f7232;
+  border-radius: 10px;
+  background: rgba(255, 245, 222, 0.7);
+  padding: 0.5rem 0.6rem;
+}
+
+.admin-section > summary,
+.admin-subsection > summary {
+  cursor: pointer;
+  font-weight: 700;
+  list-style: none;
+  padding: 0.2rem 0;
+}
+
+.admin-section > summary::-webkit-details-marker,
+.admin-subsection > summary::-webkit-details-marker {
+  display: none;
+}
+
+.admin-section > summary::before,
+.admin-subsection > summary::before {
+  content: "▸ ";
+  color: #7a4507;
+}
+
+.admin-section[open] > summary::before,
+.admin-subsection[open] > summary::before {
+  content: "▾ ";
+}
+
+.admin-table-head,
+.admin-table-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.admin-table-head {
+  margin-top: 0.4rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+.admin-table-row {
+  margin-top: 0.45rem;
+}
+
+.admin-subsection {
+  margin-top: 0.6rem;
+  border: 1px solid #a97931;
+  border-radius: 8px;
+  background: rgba(253, 239, 205, 0.8);
+  padding: 0.4rem 0.5rem 0.55rem;
+}
+
 .line-row {
   display: grid;
   grid-template-columns: 42px 1fr;
@@ -312,5 +375,10 @@ tbody tr:nth-child(even) {
 
   .form-primary-action {
     width: 100%;
+  }
+
+  .admin-table-head,
+  .admin-table-row {
+    grid-template-columns: 1fr;
   }
 }
