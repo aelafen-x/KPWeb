@@ -25,7 +25,7 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
 
   const sortedRows = useMemo(() => {
     const factor = sortDirection === "asc" ? 1 : -1;
-    const copy = [...rows];
+    const copy = rows.filter((row) => row.totalPoints > 0);
     copy.sort((a, b) => {
       let cmp = 0;
       if (sortKey === "name") {
@@ -57,8 +57,17 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
     return `${label} ${sortDirection === "asc" ? "▲" : "▼"}`;
   }
 
+  function formatBossCell(count: number, points: number): string {
+    const ptLabel = Math.abs(points) === 1 ? "pt" : "pts";
+    return `${count} - ${points} ${ptLabel}`;
+  }
+
   if (rows.length === 0) {
     return <p>No weekly results yet.</p>;
+  }
+
+  if (sortedRows.length === 0) {
+    return <p>No players with &gt; 0 points this week.</p>;
   }
 
   return (
@@ -94,7 +103,7 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
             {bossColumns.map((boss) => (
               <th key={boss}>
                 <button type="button" className="th-sort-btn" onClick={() => onSort(`boss:${boss}`)}>
-                  {renderSortLabel(`${boss} (Pts)`, `boss:${boss}`)}
+                  {renderSortLabel(`${boss} (Count - Pts)`, `boss:${boss}`)}
                 </button>
               </th>
             ))}
@@ -108,9 +117,11 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
               <td>{row.activityLevel}</td>
               <td>{row.streak}</td>
               <td>{row.last3WeeksTotal}</td>
-              {bossColumns.map((boss) => (
-                <td key={`${row.name}-${boss}`}>{row.bossPoints[boss] || 0}</td>
-              ))}
+              {bossColumns.map((boss) => {
+                const count = row.bossCounts[boss] || 0;
+                const points = row.bossPoints[boss] || 0;
+                return <td key={`${row.name}-${boss}`}>{formatBossCell(count, points)}</td>;
+              })}
             </tr>
           ))}
         </tbody>

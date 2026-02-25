@@ -9,7 +9,7 @@ type LineResolverProps = {
   canonicalNames: string[];
   canonicalBosses: string[];
   onEditLine: (lineNumber: number, value: string) => void;
-  onCheckLine: (lineNumber: number) => void;
+  onCheckLine: (lineNumber: number, value: string) => void;
   onDiscardLine: (lineNumber: number) => void;
   onAddBoss: (aliasToken: string, canonicalBoss: string, points: number) => void;
   onAddBossAlias: (aliasToken: string, canonicalBoss: string) => void;
@@ -87,8 +87,11 @@ export function LineResolver({
     );
   }
 
-  const from = Math.max(currentParsed.lineNumber - 6, 1);
-  const to = Math.min(currentParsed.lineNumber + 6, allRawLines.length);
+  const windowSize = Math.min(7, allRawLines.length);
+  const halfWindow = Math.floor(windowSize / 2);
+  let centeredFrom = Math.max(1, currentParsed.lineNumber - halfWindow);
+  let centeredTo = Math.min(allRawLines.length, centeredFrom + windowSize - 1);
+  centeredFrom = Math.max(1, centeredTo - windowSize + 1);
 
   return (
     <section className="card">
@@ -98,8 +101,8 @@ export function LineResolver({
         on.
       </p>
       <div className="line-window">
-        {Array.from({ length: to - from + 1 }).map((_, i) => {
-          const lineNumber = from + i;
+        {Array.from({ length: centeredTo - centeredFrom + 1 }).map((_, i) => {
+          const lineNumber = centeredFrom + i;
           const isCurrent = lineNumber === currentParsed.lineNumber;
           return (
             <div key={lineNumber} className={`line-row ${isCurrent ? "current" : "dim"}`}>
@@ -119,9 +122,16 @@ export function LineResolver({
             setDraft(value);
             onEditLine(currentParsed.lineNumber, value);
           }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              onCheckLine(currentParsed.lineNumber, draft);
+            }
+          }}
           rows={3}
         />
       </label>
+      <p className="hint-inline">Press Enter to check line. Shift+Enter for a newline.</p>
 
       <div className="issue-list">
         {currentParsed.issues.map((currentIssue) => (
@@ -193,7 +203,7 @@ export function LineResolver({
       ) : null}
 
       <div className="actions-row">
-        <button type="button" onClick={() => onCheckLine(currentParsed.lineNumber)}>
+        <button type="button" onClick={() => onCheckLine(currentParsed.lineNumber, draft)}>
           Check Line
         </button>
         <button type="button" onClick={() => onDiscardLine(currentParsed.lineNumber)}>

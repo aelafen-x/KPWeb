@@ -32,15 +32,14 @@ export function LoginPage(): JSX.Element {
 
   return (
     <main className="login-page">
-      <section className="card">
+      <section className="card login-card">
         <h1>DK Weekly Points</h1>
-        <p>Sign in with Google to start the wizard.</p>
-        <form onSubmit={handleSignIn} className="form-grid">
+        <p>Sign in with Google to start the wizard and manage weekly points.</p>
+        <form onSubmit={handleSignIn} className="login-actions">
           <button type="submit" disabled={loading}>
             {loading ? "Signing in..." : "Sign In with Google"}
           </button>
         </form>
-        <p className="hint">Allowlist blocks the UI. Sheet sharing permissions still control true access.</p>
         {status ? <p>{status}</p> : null}
         {error ? <p className="error">{error}</p> : null}
       </section>

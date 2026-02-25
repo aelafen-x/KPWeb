@@ -44,6 +44,25 @@ h3 {
   gap: 1rem;
 }
 
+.login-page {
+  min-height: calc(100vh - 3rem);
+  place-items: center;
+}
+
+.login-card {
+  width: min(720px, 100%);
+  padding: 1.6rem 1.8rem;
+}
+
+.login-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.login-actions button {
+  width: 100%;
+}
+
 .card {
   background: linear-gradient(180deg, rgba(255, 244, 214, 0.98), rgba(239, 215, 162, 0.98));
   border: 2px solid var(--panel-edge);
@@ -204,6 +223,12 @@ button:disabled {
 .hint {
   margin: 0.5rem 0 0;
   opacity: 0.86;
+}
+
+.hint-inline {
+  margin: 0.35rem 0 0;
+  opacity: 0.65;
+  font-size: 0.9rem;
 }
 
 .status {

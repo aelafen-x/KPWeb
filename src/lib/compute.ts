@@ -49,7 +49,8 @@ export function computeWeeklySummary(
     }
     const boss = line.bossCanonical;
     const basePoints = bossPointsByName.get(boss) ?? 0;
-    const points = (basePoints + line.pointsBonus) * line.pointsMultiplier;
+    const rawPoints = (basePoints + line.pointsBonus) * line.pointsMultiplier;
+    const points = Number.isInteger(rawPoints) ? rawPoints : Math.ceil(rawPoints);
 
     for (const name of line.addNames) {
       const row = map.get(name);

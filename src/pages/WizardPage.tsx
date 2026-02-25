@@ -76,6 +76,8 @@ export function WizardPage(): JSX.Element {
   const [fileName, setFileName] = useState("");
   const [rawLines, setRawLines] = useState<string[]>([]);
   const [parsedLines, setParsedLines] = useState<ParsedLine[]>([]);
+  const [parseVersion, setParseVersion] = useState(0);
+  const [hasParsed, setHasParsed] = useState(false);
   const [discardedLines, setDiscardedLines] = useState<Set<number>>(new Set());
   const [issueCursor, setIssueCursor] = useState(0);
   const [canonicalUsers, setCanonicalUsers] = useState<string[]>([]);
@@ -97,6 +99,7 @@ export function WizardPage(): JSX.Element {
     loadedAt: number;
     data: SetupBundle;
   } | null>(null);
+  const lastAutoCalcRef = useRef<string | null>(null);
 
   const timezoneOptions = useMemo(() => makeTimezoneOptions(), []);
 
@@ -202,6 +205,8 @@ export function WizardPage(): JSX.Element {
             cached.data.bossAliases
           )
         );
+        setParseVersion((previous) => previous + 1);
+        setHasParsed(true);
       }
       return cached.data;
     }
@@ -224,6 +229,8 @@ export function WizardPage(): JSX.Element {
     applySetupBundle(loaded);
     if (rawLines.length > 0) {
       setParsedLines(parseCurrentFile(rawLines, loaded.users, loaded.bosses, loaded.nameAliases, loaded.bossAliases));
+      setParseVersion((previous) => previous + 1);
+      setHasParsed(true);
     }
     setSetup({
       weekStartUtcDate,
@@ -256,6 +263,8 @@ export function WizardPage(): JSX.Element {
     setIssueCursor(0);
     setResultRows([]);
     setBossColumns([]);
+    setParseVersion((previous) => previous + 1);
+    setHasParsed(false);
     setStatus(`Loaded ${lines.length} lines. Click Run DKP Flow to process.`);
   }
 
@@ -268,6 +277,8 @@ export function WizardPage(): JSX.Element {
   ): void {
     const reparsed = parseCurrentFile(nextLines, usersInput, bossesInput, nameAliasesInput, bossAliasesInput);
     setParsedLines(reparsed);
+    setParseVersion((previous) => previous + 1);
+    setHasParsed(true);
   }
 
   const unresolved = unresolvedIndexes(parsedLines, discardedLines);
@@ -373,8 +384,13 @@ export function WizardPage(): JSX.Element {
     });
   }
 
-  function handleCheckLine(lineNumber: number): void {
-    reparseAll(rawLines);
+  function handleCheckLine(lineNumber: number, value: string): void {
+    setRawLines((previous) => {
+      const next = [...previous];
+      next[lineNumber - 1] = value;
+      reparseAll(next);
+      return next;
+    });
     setStatus(`Rechecked line ${lineNumber}.`);
   }
 
@@ -384,6 +400,7 @@ export function WizardPage(): JSX.Element {
       next.add(lineNumber);
       return next;
     });
+    setParseVersion((previous) => previous + 1);
   }
 
   function handleNextIssue(): void {
@@ -394,7 +411,7 @@ export function WizardPage(): JSX.Element {
   }
 
   function canRunCalculation(): boolean {
-    return rawLines.length > 0 && unresolved.length === 0 && canonicalUsers.length > 0 && !!weekStartUtcDate;
+    return hasParsed && unresolved.length === 0 && canonicalUsers.length > 0 && !!weekStartUtcDate;
   }
 
   const hasSetupLoaded =
@@ -547,26 +564,10 @@ export function WizardPage(): JSX.Element {
     setSelectedStoredWeek(weekId);
   }
 
-  async function runCalculationAndSave(): Promise<void> {
-    setError("");
-    setStatus("");
-    if (!canRunCalculation()) {
-      setError("Resolve all in-week issues (or discard lines) before calculation.");
-      return;
-    }
-    try {
-      setBusy(true);
-      await calculateAndSaveFromParsed(parsedLines);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Calculation failed.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function runWeekFlow(): Promise<void> {
     setError("");
     setStatus("");
+    lastAutoCalcRef.current = null;
     if (rawLines.length === 0) {
       setError("Upload a Timers File first.");
       return;
@@ -575,14 +576,10 @@ export function WizardPage(): JSX.Element {
       setBusy(true);
       setStatus("Loading setup and parsing file...");
       const loaded = await loadSetupData();
-      const reparsed = parseCurrentFile(
-        rawLines,
-        loaded.users,
-        loaded.bosses,
-        loaded.nameAliases,
-        loaded.bossAliases
-      );
+      const reparsed = parseCurrentFile(rawLines, loaded.users, loaded.bosses, loaded.nameAliases, loaded.bossAliases);
       setParsedLines(reparsed);
+      setParseVersion((previous) => previous + 1);
+      setHasParsed(true);
       setDiscardedLines(new Set());
       setIssueCursor(0);
       const localUnresolved = unresolvedIndexes(reparsed, new Set());
@@ -590,7 +587,7 @@ export function WizardPage(): JSX.Element {
         setStatus(`Resolver required: ${localUnresolved.length} line(s) need attention.`);
         return;
       }
-      await calculateAndSaveFromParsed(reparsed);
+      setStatus("All lines resolved. Auto-calculating...");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Run DKP Flow failed.");
     } finally {
@@ -673,6 +670,34 @@ export function WizardPage(): JSX.Element {
   }
 
   const weekId = weekStartUtcDate ? toWeekId(weekStartUtcDate) : "";
+  const autoCalcKey = `${weekId}|${parseVersion}|${discardedLines.size}`;
+
+  useEffect(() => {
+    if (busy) {
+      return;
+    }
+    if (!canRunCalculation()) {
+      return;
+    }
+    if (lastAutoCalcRef.current === autoCalcKey) {
+      return;
+    }
+    lastAutoCalcRef.current = autoCalcKey;
+    setError("");
+    setStatus("Auto-calculating and saving week...");
+    setBusy(true);
+    calculateAndSaveFromParsed(parsedLines)
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : "Auto-calculation failed.";
+        setError(message);
+        if (message === "Save cancelled by user.") {
+          setStatus("Auto-save cancelled. Use Run DKP Flow to retry.");
+        }
+      })
+      .finally(() => {
+        setBusy(false);
+      });
+  }, [autoCalcKey, busy, parsedLines, hasParsed, unresolved.length, canonicalUsers.length, weekStartUtcDate]);
 
   return (
     <main className="page">
@@ -747,11 +772,8 @@ export function WizardPage(): JSX.Element {
       />
 
       <section className="card">
-        <h3>Calculate + Save Week</h3>
+        <h3>Exports</h3>
         <div className="actions-row">
-          <button type="button" onClick={runCalculationAndSave} disabled={busy || !canRunCalculation()}>
-            Run Calculation
-          </button>
           <button type="button" disabled={resultRows.length === 0} onClick={() => exportMinimalCsv(resultRows, weekId)}>
             Export Minimal CSV
           </button>
@@ -769,6 +791,7 @@ export function WizardPage(): JSX.Element {
             Export Corrected TXT
           </button>
         </div>
+        <p className="hint">Auto-calculates when all issues are resolved (or discarded).</p>
       </section>
 
       <section className="card">
