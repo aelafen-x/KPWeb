@@ -418,7 +418,10 @@ export function WizardPage(): JSX.Element {
   const hasSetupLoaded =
     canonicalUsers.length > 0 && !!usersSpreadsheetId.trim() && !!usersRange.trim() && !!dataSpreadsheetId.trim();
 
-  async function saveWeeklyData(weekId: string, rows: WeekSummaryRow[]): Promise<WeekSummaryRow[]> {
+  async function saveWeeklyData(
+    weekId: string,
+    rows: WeekSummaryRow[]
+  ): Promise<{ rows: WeekSummaryRow[]; purgedCount: number }> {
     const client = new SheetsClient(accessToken);
     const { weeks, totalsRaw, breakdownRaw } = await loadWeekStorageBundle(client, dataSpreadsheetId);
     const weekExists = weeks.some((week) => week.weekId === weekId);
@@ -431,7 +434,7 @@ export function WizardPage(): JSX.Element {
 
     const bounds = weekBoundsFromUtcSunday(weekStartUtcDate);
     const createdUtc = DateTime.utc().toISO() || "";
-    const updatedWeeks = weeks.filter((week) => week.weekId !== weekId);
+    let updatedWeeks = weeks.filter((week) => week.weekId !== weekId);
     updatedWeeks.push({
       weekId,
       startUtc: DateTime.fromMillis(bounds.startUtcMillis).toISO() || "",
@@ -443,6 +446,13 @@ export function WizardPage(): JSX.Element {
     });
     updatedWeeks.sort((a, b) => a.weekId.localeCompare(b.weekId));
 
+    let purgedCount = 0;
+    if (updatedWeeks.length > 20) {
+      purgedCount = updatedWeeks.length - 20;
+      updatedWeeks = updatedWeeks.slice(-20);
+    }
+    const keepSet = new Set(updatedWeeks.map((week) => week.weekId));
+
     const historical: HistoricalTotal[] = totalsRaw
       .filter((row) => row[0] && row[1] && row[2] && row[3])
       .map((row) => ({
@@ -452,7 +462,7 @@ export function WizardPage(): JSX.Element {
         activityLevel: row[3],
         streak: Number(row[4] || 1)
       }))
-      .filter((row) => row.weekId !== weekId);
+      .filter((row) => row.weekId !== weekId && keepSet.has(row.weekId));
     for (const row of rows) {
       historical.push({
         weekId,
@@ -474,7 +484,7 @@ export function WizardPage(): JSX.Element {
         String(row.streak)
       ]);
 
-    const updatedBreakdown = breakdownRaw.filter((row) => row[0] !== weekId);
+    const updatedBreakdown = breakdownRaw.filter((row) => row[0] !== weekId && keepSet.has(row[0]));
     for (const row of rows) {
       const bossesSet = new Set([...Object.keys(row.bossCounts), ...Object.keys(row.bossPoints)]);
       for (const boss of bossesSet) {
@@ -540,11 +550,12 @@ export function WizardPage(): JSX.Element {
       updatedWeeks.map((week) => week.weekId),
       weekId
     );
-    return rows.map((row) => ({
+    const updatedRows = rows.map((row) => ({
       ...row,
       streak: streakMap.get(row.name) || 1,
       last3WeeksTotal: last3Totals.get(row.name) || row.totalPoints
     }));
+    return { rows: updatedRows, purgedCount };
   }
 
   async function calculateAndSaveFromParsed(linesToUse: ParsedLine[]): Promise<void> {
@@ -557,11 +568,15 @@ export function WizardPage(): JSX.Element {
       mediumMax
     });
     const weekId = toWeekId(weekStartUtcDate);
-    const withStreak = await saveWeeklyData(weekId, summary);
+    const { rows: withStreak, purgedCount } = await saveWeeklyData(weekId, summary);
     const dynamicBosses = [...new Set(bosses.map((boss) => boss.boss))].sort((a, b) => a.localeCompare(b));
     setBossColumns(dynamicBosses);
     setResultRows(withStreak);
-    setStatus(`Week ${weekId} calculated and saved.`);
+    if (purgedCount > 0) {
+      setStatus(`Week ${weekId} calculated and saved. Purged ${purgedCount} old week(s).`);
+    } else {
+      setStatus(`Week ${weekId} calculated and saved.`);
+    }
     setSelectedStoredWeek(weekId);
   }
 
@@ -670,6 +685,100 @@ export function WizardPage(): JSX.Element {
     }
   }
 
+  async function deleteStoredWeek(weekId: string): Promise<void> {
+    if (!weekId) {
+      return;
+    }
+    const shouldDelete = window.confirm(`Delete week ${weekId}? This cannot be undone.`);
+    if (!shouldDelete) {
+      return;
+    }
+    setError("");
+    try {
+      setBusy(true);
+      const client = new SheetsClient(accessToken);
+      const { weeks, totalsRaw, breakdownRaw } = await loadWeekStorageBundle(client, dataSpreadsheetId);
+      if (!weeks.some((week) => week.weekId === weekId)) {
+        throw new Error(`Week ${weekId} not found.`);
+      }
+
+      const updatedWeeks = weeks.filter((week) => week.weekId !== weekId);
+      updatedWeeks.sort((a, b) => a.weekId.localeCompare(b.weekId));
+
+      const historical: HistoricalTotal[] = totalsRaw
+        .filter((row) => row[0] && row[1] && row[2] && row[3])
+        .map((row) => ({
+          weekId: row[0],
+          name: row[1],
+          totalPoints: Number(row[2]),
+          activityLevel: row[3],
+          streak: Number(row[4] || 1)
+        }))
+        .filter((row) => row.weekId !== weekId);
+
+      recomputeStreaks(historical, updatedWeeks.map((week) => week.weekId));
+
+      const totalsRows = historical
+        .sort((a, b) => a.weekId.localeCompare(b.weekId) || a.name.localeCompare(b.name))
+        .map((row) => [
+          row.weekId,
+          row.name,
+          String(row.totalPoints),
+          row.activityLevel,
+          String(row.streak)
+        ]);
+
+      const updatedBreakdown = breakdownRaw.filter((row) => row[0] !== weekId);
+      const weekRows = updatedWeeks.map((row) => [
+        row.weekId,
+        row.startUtc,
+        row.endUtc,
+        row.timezone,
+        row.sourceFileName,
+        row.createdUtc,
+        row.notes
+      ]);
+
+      await Promise.all([
+        replaceTabRows(
+          client,
+          dataSpreadsheetId,
+          "Weeks",
+          ["WeekId", "StartUTC", "EndUTC", "Timezone", "SourceFileName", "CreatedUTC", "Notes"],
+          weekRows
+        ),
+        replaceTabRows(
+          client,
+          dataSpreadsheetId,
+          "WeekUserTotals",
+          ["WeekId", "Name", "TotalPoints", "ActivityLevel", "Streak"],
+          totalsRows
+        ),
+        replaceTabRows(
+          client,
+          dataSpreadsheetId,
+          "WeekBossBreakdown",
+          ["WeekId", "Name", "Boss", "Points", "Count"],
+          updatedBreakdown
+        )
+      ]);
+
+      setStoredWeeks(updatedWeeks.map((week) => week.weekId).sort((a, b) => b.localeCompare(a)));
+      setupCacheRef.current = null;
+
+      if (selectedStoredWeek === weekId) {
+        setSelectedStoredWeek("");
+        setResultRows([]);
+        setBossColumns([]);
+      }
+      setStatus(`Deleted week ${weekId}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to delete week.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const weekId = weekStartUtcDate ? toWeekId(weekStartUtcDate) : "";
   const autoCalcKey = `${weekId}|${parseVersion}|${discardedLines.size}`;
 
@@ -759,8 +868,30 @@ export function WizardPage(): JSX.Element {
         <p className="status-inline">{statusLine()}</p>
         <div className="form-grid">
           <label>
-            Week Start (UTC Sunday)
-            <input type="date" value={weekStartUtcDate} onChange={(event) => setWeekStartUtcDate(event.target.value)} />
+            Week Start (UTC Sunday only)
+            <input
+              type="date"
+              value={weekStartUtcDate}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                if (!nextValue) {
+                  setWeekStartUtcDate("");
+                  return;
+                }
+                const parsed = DateTime.fromISO(nextValue, { zone: "utc" });
+                if (!parsed.isValid) {
+                  setError("Invalid week start date.");
+                  return;
+                }
+                if (parsed.weekday !== 7) {
+                  const adjusted = parsed.minus({ days: parsed.weekday % 7 }).toISODate() || nextValue;
+                  setWeekStartUtcDate(adjusted);
+                  setStatus(`Adjusted week start to Sunday (${adjusted}).`);
+                  return;
+                }
+                setWeekStartUtcDate(nextValue);
+              }}
+            />
           </label>
           <label>
             Input Timestamp Timezone
@@ -856,6 +987,9 @@ export function WizardPage(): JSX.Element {
           </select>
           <button type="button" onClick={() => loadStoredWeekView(selectedStoredWeek)} disabled={!selectedStoredWeek}>
             Load Week
+          </button>
+          <button type="button" onClick={() => deleteStoredWeek(selectedStoredWeek)} disabled={!selectedStoredWeek}>
+            Delete Week
           </button>
           <Link to="/admin">Open Admin</Link>
         </div>
