@@ -9,6 +9,7 @@ type WeekTableProps = {
 export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
   const [sortKey, setSortKey] = useState<string>("totalPoints");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+  const [query, setQuery] = useState("");
 
   function onSort(nextKey: string): void {
     if (sortKey === nextKey) {
@@ -25,7 +26,16 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
 
   const sortedRows = useMemo(() => {
     const factor = sortDirection === "asc" ? 1 : -1;
-    const copy = rows.filter((row) => row.totalPoints > 0);
+    const normalizedQuery = query.trim().toLowerCase();
+    const copy = rows.filter((row) => {
+      if (row.totalPoints <= 0) {
+        return false;
+      }
+      if (!normalizedQuery) {
+        return true;
+      }
+      return row.name.toLowerCase().includes(normalizedQuery);
+    });
     copy.sort((a, b) => {
       let cmp = 0;
       if (sortKey === "name") {
@@ -40,7 +50,7 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
         cmp = a.last3WeeksTotal - b.last3WeeksTotal;
       } else if (sortKey.startsWith("boss:")) {
         const boss = sortKey.slice(5);
-        cmp = (a.bossPoints[boss] || 0) - (b.bossPoints[boss] || 0);
+        cmp = (a.bossCounts[boss] || 0) - (b.bossCounts[boss] || 0);
       }
       if (cmp === 0) {
         cmp = a.name.localeCompare(b.name);
@@ -48,7 +58,7 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
       return cmp * factor;
     });
     return copy;
-  }, [rows, sortDirection, sortKey]);
+  }, [rows, sortDirection, sortKey, query]);
 
   function renderSortLabel(label: string, key: string): string {
     if (sortKey !== key) {
@@ -66,16 +76,13 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
     return <p>No weekly results yet.</p>;
   }
 
-  if (sortedRows.length === 0) {
-    return <p>No players with &gt; 0 points this week.</p>;
-  }
-
-  return (
+  const columnCount = 5 + bossColumns.length;
+  const tableBody = (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>
+            <th className="sticky-col">
               <button type="button" className="th-sort-btn" onClick={() => onSort("name")}>
                 {renderSortLabel("Name", "name")}
               </button>
@@ -110,22 +117,41 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
           </tr>
         </thead>
         <tbody>
-          {sortedRows.map((row) => (
-            <tr key={row.name}>
-              <td>{row.name}</td>
-              <td>{row.totalPoints}</td>
-              <td>{row.activityLevel}</td>
-              <td>{row.streak}</td>
-              <td>{row.last3WeeksTotal}</td>
-              {bossColumns.map((boss) => {
-                const count = row.bossCounts[boss] || 0;
-                const points = row.bossPoints[boss] || 0;
-                return <td key={`${row.name}-${boss}`}>{formatBossCell(count, points)}</td>;
-              })}
+          {sortedRows.length === 0 ? (
+            <tr>
+              <td colSpan={columnCount}>No players with &gt; 0 points this week.</td>
             </tr>
-          ))}
+          ) : (
+            sortedRows.map((row) => (
+              <tr key={row.name}>
+              <td className="sticky-col">{row.name}</td>
+                <td>{row.totalPoints}</td>
+                <td>{row.activityLevel}</td>
+                <td>{row.streak}</td>
+                <td>{row.last3WeeksTotal}</td>
+                {bossColumns.map((boss) => {
+                  const count = row.bossCounts[boss] || 0;
+                  const points = row.bossPoints[boss] || 0;
+                  return <td key={`${row.name}-${boss}`}>{formatBossCell(count, points)}</td>;
+                })}
+              </tr>
+            ))
+          )}
         </tbody>
       </table>
     </div>
+  );
+
+  return (
+    <>
+      <div className="table-controls">
+        <input
+          placeholder="Filter by name..."
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </div>
+      {tableBody}
+    </>
   );
 }

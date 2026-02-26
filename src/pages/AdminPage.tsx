@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AppHeader } from "../components/AppHeader";
+import { StatusBanner } from "../components/StatusBanner";
 import {
   SheetsClient,
   loadDataSheetSetupBundle,
@@ -175,6 +176,7 @@ export function AdminPage(): JSX.Element {
   return (
     <main className="page">
       <AppHeader />
+      <StatusBanner status={status} error={error} onClearStatus={() => setStatus("")} />
       <section className="card">
         <h2>Admin Settings</h2>
         <p>Data Sheet: {setup.dataSpreadsheetId}</p>
@@ -469,8 +471,6 @@ export function AdminPage(): JSX.Element {
             Save All
           </button>
         </form>
-        {status ? <p className="status">{status}</p> : null}
-        {error ? <p className="error">{error}</p> : null}
       </section>
     </main>
   );

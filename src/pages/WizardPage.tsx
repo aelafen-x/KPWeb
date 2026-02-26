@@ -3,6 +3,7 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AppHeader } from "../components/AppHeader";
 import { LineResolver } from "../components/LineResolver";
+import { StatusBanner } from "../components/StatusBanner";
 import { WeekTable } from "../components/WeekTable";
 import { computeWeeklySummary, recomputeStreaks } from "../lib/compute";
 import { exportCorrectedFile, exportFullCsv, exportMinimalCsv, exportMinimalTxt } from "../lib/export";
@@ -699,9 +700,51 @@ export function WizardPage(): JSX.Element {
       });
   }, [autoCalcKey, busy, parsedLines, hasParsed, unresolved.length, canonicalUsers.length, weekStartUtcDate]);
 
+  function statusLine(): string {
+    if (busy) {
+      return "Working...";
+    }
+    if (!hasSetupLoaded) {
+      return "Next: load setup details.";
+    }
+    if (rawLines.length === 0) {
+      return "Next: upload Timers file.";
+    }
+    if (!hasParsed) {
+      return "Next: run DKP flow to parse file.";
+    }
+    if (unresolved.length > 0) {
+      return `Resolver: ${unresolved.length} line(s) need attention.`;
+    }
+    if (resultRows.length > 0) {
+      return "Week saved. You can export or review history.";
+    }
+    return "Ready to auto-save week.";
+  }
+
+  function primaryCtaLabel(): string {
+    if (busy) {
+      return "Working...";
+    }
+    if (rawLines.length === 0) {
+      return "Upload Timers File to Continue";
+    }
+    if (!hasParsed) {
+      return "Start Resolver";
+    }
+    if (unresolved.length > 0) {
+      return "Continue Resolver";
+    }
+    if (resultRows.length > 0) {
+      return "Run DKP Flow";
+    }
+    return "Run DKP Flow";
+  }
+
   return (
     <main className="page">
       <AppHeader />
+      <StatusBanner status={status} error={error} onClearStatus={() => setStatus("")} />
 
       <section className="card">
         <h2>Wizard Setup</h2>
@@ -713,6 +756,7 @@ export function WizardPage(): JSX.Element {
           </span>
           <span className={`flow-step ${resultRows.length > 0 ? "done" : ""}`}>4. Saved</span>
         </div>
+        <p className="status-inline">{statusLine()}</p>
         <div className="form-grid">
           <label>
             Week Start (UTC Sunday)
@@ -744,8 +788,13 @@ export function WizardPage(): JSX.Element {
             Timers File
             <input type="file" accept=".txt,text/plain" onChange={onFileChange} />
           </label>
-          <button type="button" className="form-primary-action" onClick={runWeekFlow} disabled={busy}>
-            Run DKP Flow
+          <button
+            type="button"
+            className="form-primary-action"
+            onClick={runWeekFlow}
+            disabled={busy || rawLines.length === 0}
+          >
+            {primaryCtaLabel()}
           </button>
         </div>
         <p className="hint">Run DKP Flow loads setup, parses file, then either opens resolver or auto-saves.</p>
@@ -817,8 +866,6 @@ export function WizardPage(): JSX.Element {
         <WeekTable rows={resultRows} bossColumns={bossColumns} />
       </section>
 
-      {status ? <p className="status">{status}</p> : null}
-      {error ? <p className="error">{error}</p> : null}
     </main>
   );
 }

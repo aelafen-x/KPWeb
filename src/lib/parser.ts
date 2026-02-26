@@ -228,10 +228,17 @@ function applyNamesWithNotRule(
 
   const dedupedAdd = dedupePreserveOrder(addNames);
   const dedupedSubtract = dedupePreserveOrder(subtractNames);
+  const addSet = new Set(dedupedAdd.map((name) => normalizeKey(name)));
   const subtractSet = new Set(dedupedSubtract.map((name) => normalizeKey(name)));
+  const overlap = new Set<string>();
+  for (const key of addSet) {
+    if (subtractSet.has(key)) {
+      overlap.add(key);
+    }
+  }
   return {
-    addNames: dedupedAdd.filter((name) => !subtractSet.has(normalizeKey(name))),
-    subtractNames: dedupedSubtract
+    addNames: dedupedAdd.filter((name) => !overlap.has(normalizeKey(name))),
+    subtractNames: dedupedSubtract.filter((name) => !overlap.has(normalizeKey(name)))
   };
 }
 
