@@ -128,6 +128,22 @@ function clampCromCounter(value: string | number | undefined): number {
   return Math.max(0, Math.min(9, numeric));
 }
 
+function clearCountersFrom(
+  weeksAscending: string[],
+  cromByWeek: Map<string, CromWeekEntry>,
+  startWeekId: string,
+  includeStart: boolean
+): void {
+  for (const weekId of weeksAscending) {
+    if (weekId > startWeekId || (includeStart && weekId === startWeekId)) {
+      const entry = cromByWeek.get(weekId);
+      if (entry && entry.counter !== undefined) {
+        cromByWeek.set(weekId, { ...entry, counter: undefined });
+      }
+    }
+  }
+}
+
 function buildCromTimeline(
   weeksAscending: string[],
   cromByWeek: Map<string, CromWeekEntry>,
@@ -483,6 +499,7 @@ export function WizardPage(): JSX.Element {
       const cromByWeek = parseCromWeeks(cromWeeksRaw);
       const existing = cromByWeek.get(loadedWeekId) || { count: 0 };
       cromByWeek.set(loadedWeekId, { count: existing.count, counter: nextCounter });
+      clearCountersFrom(weeksAscending, cromByWeek, loadedWeekId, false);
       const cromTimeline = buildCromTimeline(weeksAscending, cromByWeek);
       await replaceTabRows(
         client,
@@ -724,6 +741,7 @@ export function WizardPage(): JSX.Element {
     }
     cromByWeek.set(weekId, { count: cromPostsValid });
 
+    clearCountersFrom(weeksAscending, cromByWeek, weekId, true);
     const cromTimeline = buildCromTimeline(weeksAscending, cromByWeek);
     const resetWeekForCurrent = cromTimeline.resetByWeek.get(weekId) || weeksAscending[0] || "";
     const counterForCurrent = cromTimeline.counterByWeek.get(weekId) || 0;
@@ -1045,6 +1063,7 @@ export function WizardPage(): JSX.Element {
           cromByWeek.delete(existingWeekId);
         }
       }
+      clearCountersFrom(weeksAscending, cromByWeek, weekId, true);
       const cromTimeline = buildCromTimeline(weeksAscending, cromByWeek);
       const weekRows = updatedWeeks.map((row) => [
         row.weekId,
