@@ -587,7 +587,6 @@ export function WizardPage(): JSX.Element {
       next[lineNumber - 1] = value;
       return next;
     });
-    setPendingSave(false);
   }
 
   function handleCheckLine(lineNumber: number, value: string): void {
@@ -597,7 +596,6 @@ export function WizardPage(): JSX.Element {
       reparseAll(next);
       return next;
     });
-    setPendingSave(false);
     setStatus(`Rechecked line ${lineNumber}.`);
   }
 
@@ -608,7 +606,6 @@ export function WizardPage(): JSX.Element {
       return next;
     });
     setParseVersion((previous) => previous + 1);
-    setPendingSave(false);
   }
 
   function handleNextIssue(): void {
@@ -1002,7 +999,6 @@ export function WizardPage(): JSX.Element {
       return;
     }
     setError("");
-    setPendingSave(false);
     try {
       setBusy(true);
       const client = new SheetsClient(accessToken);
