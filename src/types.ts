@@ -13,6 +13,7 @@ export type WizardSetup = {
   timezone: string;
   usersSpreadsheetId: string;
   usersRange: string;
+  usersPointsColumn: string;
   dataSpreadsheetId: string;
 };
 
@@ -61,6 +62,8 @@ export type WeekSummaryRow = {
   activityLevel: string;
   streak: number;
   last3WeeksTotal: number;
+  reached30k: boolean;
+  sinceCromResetTotal: number;
   bossPoints: Record<string, number>;
   bossCounts: Record<string, number>;
 };

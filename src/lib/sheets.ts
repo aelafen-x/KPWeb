@@ -23,6 +23,17 @@ function a1(sheetName: string, range = "A:Z"): string {
   return `'${encodeA1Part(sheetName)}'!${range}`;
 }
 
+function columnLetter(index: number): string {
+  let column = "";
+  let current = index + 1;
+  while (current > 0) {
+    const remainder = (current - 1) % 26;
+    column = String.fromCharCode(65 + remainder) + column;
+    current = Math.floor((current - 1) / 26);
+  }
+  return column;
+}
+
 const DATA_SETUP_RANGES = {
   allowlist: a1("Allowlist", "A2:A"),
   bosses: a1("Bosses", "A2:B"),
@@ -35,7 +46,8 @@ const DATA_SETUP_RANGES = {
 const WEEK_STORAGE_RANGES = {
   weeks: a1("Weeks", "A2:G"),
   totals: a1("WeekUserTotals", "A2:E"),
-  breakdown: a1("WeekBossBreakdown", "A2:E")
+  breakdown: a1("WeekBossBreakdown", "A2:E"),
+  cromWeeks: a1("CromWeeks", "A2:C")
 };
 
 function sleep(ms: number): Promise<void> {
@@ -203,7 +215,17 @@ export class SheetsClient {
           range: a1(schema.name, "A1"),
           values: [schema.headers]
         });
+        continue;
       }
+      schema.headers.forEach((header, index) => {
+        const existing = firstRow[index] || "";
+        if (!existing.trim()) {
+          headerUpdates.push({
+            range: a1(schema.name, `${columnLetter(index)}1`),
+            values: [[header]]
+          });
+        }
+      });
     }
     await this.batchUpdateValues(spreadsheetId, headerUpdates);
 
@@ -237,6 +259,68 @@ function parseUsersRows(rows: string[][]): string[] {
     }
   }
   return out;
+}
+
+function parseUsersWithTotals(
+  usersRows: string[][],
+  totalsRows: string[][]
+): { users: string[]; reached30kByName: Record<string, boolean> } {
+  const users: string[] = [];
+  const reached30kByName: Record<string, boolean> = {};
+  const max = Math.max(usersRows.length, totalsRows.length);
+  for (let index = 0; index < max; index += 1) {
+    const name = (usersRows[index]?.[0] || "").trim();
+    if (!name) {
+      continue;
+    }
+    users.push(name);
+    const raw = (totalsRows[index]?.[0] || "").toString().replace(/,/g, "").trim();
+    const value = raw ? Number(raw) : 0;
+    reached30kByName[name] = Number.isFinite(value) && value >= 30000;
+  }
+  return { users, reached30kByName };
+}
+
+function sanitizeColumnLetter(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z]/g, "");
+}
+
+function buildRangeWithColumn(usersRange: string, columnLetter: string): string | null {
+  const col = sanitizeColumnLetter(columnLetter);
+  if (!col) {
+    return null;
+  }
+  let sheetPart = "";
+  let rangePart = usersRange;
+  if (usersRange.includes("!")) {
+    const split = usersRange.split("!");
+    sheetPart = split[0];
+    rangePart = split[1] || "";
+  }
+
+  const range = rangePart.trim();
+  const fullRangeMatch = range.match(/^([A-Za-z]+)(\d+):([A-Za-z]+)(\d+)$/);
+  if (fullRangeMatch) {
+    const startRow = fullRangeMatch[2];
+    const endRow = fullRangeMatch[4];
+    const colRange = `${col}${startRow}:${col}${endRow}`;
+    return sheetPart ? `${sheetPart}!${colRange}` : colRange;
+  }
+
+  const rowRangeMatch = range.match(/^([A-Za-z]+)(\d+):([A-Za-z]+)$/);
+  if (rowRangeMatch) {
+    const startRow = rowRangeMatch[2];
+    const colRange = `${col}${startRow}:${col}`;
+    return sheetPart ? `${sheetPart}!${colRange}` : colRange;
+  }
+
+  const columnOnlyMatch = range.match(/^([A-Za-z]+):([A-Za-z]+)$/);
+  if (columnOnlyMatch) {
+    const colRange = `${col}:${col}`;
+    return sheetPart ? `${sheetPart}!${colRange}` : colRange;
+  }
+
+  return null;
 }
 
 function parseBossRows(rows: string[][]): BossConfig[] {
@@ -287,6 +371,7 @@ export type DataSheetSetupBundle = {
 
 export type SetupBundle = DataSheetSetupBundle & {
   users: string[];
+  reached30kByName: Record<string, boolean>;
 };
 
 export async function loadDataSheetSetupBundle(
@@ -309,15 +394,34 @@ export async function loadSetupBundle(
   client: SheetsClient,
   usersSpreadsheetId: string,
   usersRange: string,
-  dataSpreadsheetId: string
+  dataSpreadsheetId: string,
+  usersPointsColumn?: string
 ): Promise<SetupBundle> {
+  const totalsRange = usersPointsColumn ? buildRangeWithColumn(usersRange, usersPointsColumn) : null;
+  if (totalsRange) {
+    const [byRange, dataBundle] = await Promise.all([
+      client.batchReadRanges(usersSpreadsheetId, [usersRange, totalsRange]),
+      loadDataSheetSetupBundle(client, dataSpreadsheetId)
+    ]);
+    const usersRows = byRange[usersRange] || [];
+    const totalsRows = byRange[totalsRange] || [];
+    const { users, reached30kByName } = parseUsersWithTotals(usersRows, totalsRows);
+    return {
+      ...dataBundle,
+      users,
+      reached30kByName
+    };
+  }
+
   const [usersRows, dataBundle] = await Promise.all([
     client.readRange(usersSpreadsheetId, usersRange),
     loadDataSheetSetupBundle(client, dataSpreadsheetId)
   ]);
+  const users = parseUsersRows(usersRows);
   return {
     ...dataBundle,
-    users: parseUsersRows(usersRows)
+    users,
+    reached30kByName: {}
   };
 }
 
@@ -328,13 +432,15 @@ export async function loadWeekStorageBundle(
   weeks: StoredWeek[];
   totalsRaw: string[][];
   breakdownRaw: string[][];
+  cromWeeksRaw: string[][];
 }> {
   const ranges = Object.values(WEEK_STORAGE_RANGES);
   const byRange = await client.batchReadRanges(dataSpreadsheetId, ranges);
   return {
     weeks: parseWeeksRows(byRange[WEEK_STORAGE_RANGES.weeks] || []),
     totalsRaw: byRange[WEEK_STORAGE_RANGES.totals] || [],
-    breakdownRaw: byRange[WEEK_STORAGE_RANGES.breakdown] || []
+    breakdownRaw: byRange[WEEK_STORAGE_RANGES.breakdown] || [],
+    cromWeeksRaw: byRange[WEEK_STORAGE_RANGES.cromWeeks] || []
   };
 }
 

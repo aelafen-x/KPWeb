@@ -48,6 +48,10 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
         cmp = a.streak - b.streak;
       } else if (sortKey === "last3WeeksTotal") {
         cmp = a.last3WeeksTotal - b.last3WeeksTotal;
+      } else if (sortKey === "sinceCromResetTotal") {
+        cmp = a.sinceCromResetTotal - b.sinceCromResetTotal;
+      } else if (sortKey === "reached30k") {
+        cmp = Number(a.reached30k) - Number(b.reached30k);
       } else if (sortKey.startsWith("boss:")) {
         const boss = sortKey.slice(5);
         cmp = (a.bossCounts[boss] || 0) - (b.bossCounts[boss] || 0);
@@ -76,7 +80,7 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
     return <p>No weekly results yet.</p>;
   }
 
-  const columnCount = 5 + bossColumns.length;
+  const columnCount = 7 + bossColumns.length;
   const tableBody = (
     <div className="table-wrap">
       <table>
@@ -98,6 +102,11 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
               </button>
             </th>
             <th>
+              <button type="button" className="th-sort-btn" onClick={() => onSort("reached30k")}>
+                {renderSortLabel("30k", "reached30k")}
+              </button>
+            </th>
+            <th>
               <button type="button" className="th-sort-btn" onClick={() => onSort("streak")}>
                 {renderSortLabel("Consecutive Weeks at Activity Level", "streak")}
               </button>
@@ -105,6 +114,11 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
             <th>
               <button type="button" className="th-sort-btn" onClick={() => onSort("last3WeeksTotal")}>
                 {renderSortLabel("Last 3 Weeks Total", "last3WeeksTotal")}
+              </button>
+            </th>
+            <th>
+              <button type="button" className="th-sort-btn" onClick={() => onSort("sinceCromResetTotal")}>
+                {renderSortLabel("Since Crom Reset", "sinceCromResetTotal")}
               </button>
             </th>
             {bossColumns.map((boss) => (
@@ -124,11 +138,13 @@ export function WeekTable({ rows, bossColumns }: WeekTableProps): JSX.Element {
           ) : (
             sortedRows.map((row) => (
               <tr key={row.name}>
-              <td className="sticky-col">{row.name}</td>
+                <td className="sticky-col">{row.name}</td>
                 <td>{row.totalPoints}</td>
                 <td>{row.activityLevel}</td>
+                <td>{row.reached30k ? "✓" : ""}</td>
                 <td>{row.streak}</td>
                 <td>{row.last3WeeksTotal}</td>
+                <td>{row.sinceCromResetTotal}</td>
                 {bossColumns.map((boss) => {
                   const count = row.bossCounts[boss] || 0;
                   const points = row.bossPoints[boss] || 0;

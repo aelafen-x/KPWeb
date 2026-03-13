@@ -6,7 +6,7 @@ import { LineResolver } from "../components/LineResolver";
 import { StatusBanner } from "../components/StatusBanner";
 import { WeekTable } from "../components/WeekTable";
 import { computeWeeklySummary, recomputeStreaks } from "../lib/compute";
-import { exportCorrectedFile, exportFullCsv, exportMinimalCsv, exportMinimalTxt } from "../lib/export";
+import { copyMinimalTxt, exportCorrectedFile, exportFullCsv, exportMinimalCsv, exportMinimalTxt } from "../lib/export";
 import { createParserLookup, isTimestampLineStart, parseLine } from "../lib/parser";
 import {
   SheetsClient,
@@ -54,6 +54,121 @@ function computeLast3WeekTotals(
   return totalsByName;
 }
 
+async function readFileLines(file: File): Promise<string[]> {
+  const text = await file.text();
+  return text.split(/\r?\n/);
+}
+
+type CromWeekEntry = {
+  count: number;
+  counter?: number;
+};
+
+type CromTimeline = {
+  counterByWeek: Map<string, number>;
+  resetByWeek: Map<string, string>;
+  finalCounter: number;
+  finalResetWeekId: string;
+};
+
+function computeSinceResetTotals(
+  allRows: Last3Input[],
+  weeksAscending: string[],
+  resetWeekId: string,
+  targetWeekId: string
+): Map<string, number> {
+  const endIndex = weeksAscending.indexOf(targetWeekId);
+  if (endIndex === -1) {
+    return new Map<string, number>();
+  }
+  let startIndex = weeksAscending.indexOf(resetWeekId);
+  if (startIndex === -1) {
+    startIndex = 0;
+  }
+  const includedWeeks = new Set(weeksAscending.slice(startIndex, endIndex + 1));
+  const totalsByName = new Map<string, number>();
+  for (const row of allRows) {
+    if (!includedWeeks.has(row.weekId)) {
+      continue;
+    }
+    totalsByName.set(row.name, (totalsByName.get(row.name) || 0) + row.totalPoints);
+  }
+  return totalsByName;
+}
+
+function parseCromWeeks(rows: string[][]): Map<string, CromWeekEntry> {
+  const output = new Map<string, CromWeekEntry>();
+  for (const row of rows) {
+    if (!row[0]) {
+      continue;
+    }
+    const count = Number(row[1] || 0);
+    const counter = row.length > 2 ? Number(row[2]) : undefined;
+    output.set(row[0], {
+      count: Number.isFinite(count) ? count : 0,
+      counter: Number.isFinite(counter) ? counter : undefined
+    });
+  }
+  return output;
+}
+
+function computeCromCounter(prevCounter: number, count: number): number {
+  let counter = clampCromCounter(prevCounter);
+  for (let i = 0; i < count; i += 1) {
+    counter = (counter % 9) + 1;
+  }
+  return counter;
+}
+
+function clampCromCounter(value: string | number | undefined): number {
+  const numeric = Math.floor(Number(value || 0));
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(9, numeric));
+}
+
+function buildCromTimeline(
+  weeksAscending: string[],
+  cromByWeek: Map<string, CromWeekEntry>,
+  seedCounter = 0,
+  seedResetWeekId = ""
+): CromTimeline {
+  const counterByWeek = new Map<string, number>();
+  const resetByWeek = new Map<string, string>();
+  if (weeksAscending.length === 0) {
+    return {
+      counterByWeek,
+      resetByWeek,
+      finalCounter: seedCounter,
+      finalResetWeekId: seedResetWeekId || ""
+    };
+  }
+
+  let counter = clampCromCounter(seedCounter);
+  let currentResetWeek = seedResetWeekId || weeksAscending[0];
+  for (const weekId of weeksAscending) {
+    const entry = cromByWeek.get(weekId);
+    const count = entry?.count ?? 0;
+    const storedCounter = entry?.counter;
+    const prevCounter = counter;
+    counter =
+      storedCounter !== undefined ? clampCromCounter(storedCounter) : computeCromCounter(counter, count);
+    if (counter === 1 && prevCounter !== 1) {
+      currentResetWeek = weekId;
+    }
+    counterByWeek.set(weekId, counter);
+    resetByWeek.set(weekId, currentResetWeek);
+  }
+
+  return {
+    counterByWeek,
+    resetByWeek,
+    finalCounter: counter,
+    finalResetWeekId: currentResetWeek
+  };
+}
+
 function makeTimezoneOptions(): string[] {
   const supportedValuesOf = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] })
     .supportedValuesOf;
@@ -73,8 +188,10 @@ export function WizardPage(): JSX.Element {
   const [timezone, setTimezone] = useState(setup?.timezone || getBrowserTimezone());
   const [usersSpreadsheetId, setUsersSpreadsheetId] = useState(setup?.usersSpreadsheetId || "");
   const [usersRange, setUsersRange] = useState(setup?.usersRange || "A:A");
+  const [usersPointsColumn, setUsersPointsColumn] = useState(setup?.usersPointsColumn || "");
   const [dataSpreadsheetId, setDataSpreadsheetId] = useState(setup?.dataSpreadsheetId || "");
   const [fileName, setFileName] = useState("");
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [rawLines, setRawLines] = useState<string[]>([]);
   const [parsedLines, setParsedLines] = useState<ParsedLine[]>([]);
   const [parseVersion, setParseVersion] = useState(0);
@@ -85,15 +202,24 @@ export function WizardPage(): JSX.Element {
   const [bosses, setBosses] = useState<BossConfig[]>([]);
   const [bossAliases, setBossAliases] = useState<Array<{ alias: string; canonical: string }>>([]);
   const [nameAliases, setNameAliases] = useState<Array<{ alias: string; canonical: string }>>([]);
+  const [reached30kByName, setReached30kByName] = useState<Record<string, boolean>>({});
   const [config, setConfig] = useState<Record<string, string>>({});
+  const [cromCounter, setCromCounter] = useState(0);
+  const [cromResetWeekId, setCromResetWeekId] = useState("");
+  const [showCromEditor, setShowCromEditor] = useState(false);
+  const [cromEditValue, setCromEditValue] = useState("");
+  const [cromSaving, setCromSaving] = useState(false);
+  const [loadedWeekId, setLoadedWeekId] = useState("");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [resultRows, setResultRows] = useState<WeekSummaryRow[]>([]);
   const [bossColumns, setBossColumns] = useState<string[]>([]);
+  const [copyFeedback, setCopyFeedback] = useState<"" | "ok" | "fail">("");
   const [storedWeeks, setStoredWeeks] = useState<string[]>([]);
   const [selectedStoredWeek, setSelectedStoredWeek] = useState("");
   const [autoLoadAttempted, setAutoLoadAttempted] = useState(false);
+  const [flowReady, setFlowReady] = useState(false);
   const ensuredSheetsRef = useRef<Set<string>>(new Set());
   const setupCacheRef = useRef<{
     key: string;
@@ -180,6 +306,9 @@ export function WizardPage(): JSX.Element {
     setBossAliases(loaded.bossAliases);
     setNameAliases(loaded.nameAliases);
     setConfig(loaded.config);
+    setReached30kByName(loaded.reached30kByName || {});
+    setCromCounter(0);
+    setCromResetWeekId("");
     setStoredWeeks(loaded.weeks.map((week) => week.weekId).sort((a, b) => b.localeCompare(a)));
   }
 
@@ -187,7 +316,7 @@ export function WizardPage(): JSX.Element {
     if (!usersSpreadsheetId.trim() || !usersRange.trim() || !dataSpreadsheetId.trim()) {
       throw new Error("Users Spreadsheet ID, Users Range, and Data Spreadsheet ID are required.");
     }
-    const cacheKey = `${usersSpreadsheetId.trim()}|${usersRange.trim()}|${dataSpreadsheetId.trim()}`;
+    const cacheKey = `${usersSpreadsheetId.trim()}|${usersRange.trim()}|${usersPointsColumn.trim()}|${dataSpreadsheetId.trim()}`;
     const cached = setupCacheRef.current;
     if (
       !forceRefresh &&
@@ -222,7 +351,8 @@ export function WizardPage(): JSX.Element {
       client,
       usersSpreadsheetId.trim(),
       usersRange.trim(),
-      normalizedDataSheetId
+      normalizedDataSheetId,
+      usersPointsColumn.trim() || undefined
     );
     if (loaded.allowlist.length > 0 && !loaded.allowlist.includes(authEmail)) {
       throw new Error("Your account is not in the Allowlist tab for this data sheet.");
@@ -238,6 +368,7 @@ export function WizardPage(): JSX.Element {
       timezone,
       usersSpreadsheetId,
       usersRange,
+      usersPointsColumn,
       dataSpreadsheetId
     });
     setupCacheRef.current = {
@@ -255,9 +386,10 @@ export function WizardPage(): JSX.Element {
     }
     setError("");
     setStatus("");
+    setFlowReady(false);
     setFileName(file.name);
-    const text = await file.text();
-    const lines = text.split(/\r?\n/);
+    setUploadedFile(file);
+    const lines = await readFileLines(file);
     setRawLines(lines);
     setParsedLines([]);
     setDiscardedLines(new Set());
@@ -326,6 +458,78 @@ export function WizardPage(): JSX.Element {
     setupCacheRef.current = null;
   }
 
+  function openCromEditor(): void {
+    if (!loadedWeekId) {
+      setError("Load a week first to edit its Crom counter.");
+      return;
+    }
+    setCromEditValue(String(cromCounter));
+    setShowCromEditor(true);
+  }
+
+  async function saveCromCounterForWeek(): Promise<void> {
+    if (!loadedWeekId) {
+      setError("Load a week first to edit its Crom counter.");
+      return;
+    }
+    const nextCounter = clampCromCounter(cromEditValue);
+    setError("");
+    setStatus("");
+    setCromSaving(true);
+    try {
+      const client = new SheetsClient(accessToken);
+      const { weeks, totalsRaw, cromWeeksRaw } = await loadWeekStorageBundle(client, dataSpreadsheetId);
+      const weeksAscending = weeks.map((week) => week.weekId).sort((a, b) => a.localeCompare(b));
+      const cromByWeek = parseCromWeeks(cromWeeksRaw);
+      const existing = cromByWeek.get(loadedWeekId) || { count: 0 };
+      cromByWeek.set(loadedWeekId, { count: existing.count, counter: nextCounter });
+      const cromTimeline = buildCromTimeline(weeksAscending, cromByWeek);
+      await replaceTabRows(
+        client,
+        dataSpreadsheetId,
+        "CromWeeks",
+        ["WeekId", "CromPostsValid", "CromCounter"],
+        weeksAscending.map((week) => [
+          week,
+          String(cromByWeek.get(week)?.count || 0),
+          String(cromTimeline.counterByWeek.get(week) || 0)
+        ])
+      );
+
+      const resetWeekForLoaded = cromTimeline.resetByWeek.get(loadedWeekId) || weeksAscending[0] || "";
+      setCromCounter(cromTimeline.counterByWeek.get(loadedWeekId) || nextCounter);
+      setCromResetWeekId(resetWeekForLoaded);
+      setupCacheRef.current = null;
+      setShowCromEditor(false);
+      setStatus("Crom counter updated.");
+
+      if (resultRows.length > 0) {
+        const sinceResetTotals = computeSinceResetTotals(
+          totalsRaw
+            .filter((row) => row[0] && row[1] && row[2])
+            .map((row) => ({
+              weekId: row[0],
+              name: row[1],
+              totalPoints: Number(row[2] || 0)
+            })),
+          weeksAscending,
+          resetWeekForLoaded,
+          loadedWeekId
+        );
+        setResultRows((previous) =>
+          previous.map((row) => ({
+            ...row,
+            sinceCromResetTotal: sinceResetTotals.get(row.name) || row.totalPoints
+          }))
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update Crom counter.");
+    } finally {
+      setCromSaving(false);
+    }
+  }
+
   async function handleAddNameAlias(aliasToken: string, canonicalName: string): Promise<void> {
     setError("");
     try {
@@ -383,6 +587,7 @@ export function WizardPage(): JSX.Element {
       next[lineNumber - 1] = value;
       return next;
     });
+    setPendingSave(false);
   }
 
   function handleCheckLine(lineNumber: number, value: string): void {
@@ -392,6 +597,7 @@ export function WizardPage(): JSX.Element {
       reparseAll(next);
       return next;
     });
+    setPendingSave(false);
     setStatus(`Rechecked line ${lineNumber}.`);
   }
 
@@ -402,6 +608,7 @@ export function WizardPage(): JSX.Element {
       return next;
     });
     setParseVersion((previous) => previous + 1);
+    setPendingSave(false);
   }
 
   function handleNextIssue(): void {
@@ -412,7 +619,13 @@ export function WizardPage(): JSX.Element {
   }
 
   function canRunCalculation(): boolean {
-    return hasParsed && unresolved.length === 0 && canonicalUsers.length > 0 && !!weekStartUtcDate;
+    return (
+      flowReady &&
+      hasParsed &&
+      unresolved.length === 0 &&
+      canonicalUsers.length > 0 &&
+      !!weekStartUtcDate
+    );
   }
 
   const hasSetupLoaded =
@@ -420,12 +633,19 @@ export function WizardPage(): JSX.Element {
 
   async function saveWeeklyData(
     weekId: string,
-    rows: WeekSummaryRow[]
-  ): Promise<{ rows: WeekSummaryRow[]; purgedCount: number }> {
+    rows: WeekSummaryRow[],
+    cromPostsValid: number,
+    persist = true
+  ): Promise<{
+    rows: WeekSummaryRow[];
+    purgedCount: number;
+    cromCounter: number;
+    cromResetWeekId: string;
+  }> {
     const client = new SheetsClient(accessToken);
-    const { weeks, totalsRaw, breakdownRaw } = await loadWeekStorageBundle(client, dataSpreadsheetId);
+    const { weeks, totalsRaw, breakdownRaw, cromWeeksRaw } = await loadWeekStorageBundle(client, dataSpreadsheetId);
     const weekExists = weeks.some((week) => week.weekId === weekId);
-    if (weekExists) {
+    if (persist && weekExists) {
       const shouldOverwrite = window.confirm(`Week ${weekId} already exists. Overwrite?`);
       if (!shouldOverwrite) {
         throw new Error("Save cancelled by user.");
@@ -472,7 +692,8 @@ export function WizardPage(): JSX.Element {
         streak: 1
       });
     }
-    recomputeStreaks(historical, updatedWeeks.map((week) => week.weekId));
+    const weeksAscending = updatedWeeks.map((week) => week.weekId);
+    recomputeStreaks(historical, weeksAscending);
 
     const totalsRows = historical
       .sort((a, b) => a.weekId.localeCompare(b.weekId) || a.name.localeCompare(b.name))
@@ -498,6 +719,18 @@ export function WizardPage(): JSX.Element {
       }
     }
 
+    const cromByWeek = parseCromWeeks(cromWeeksRaw);
+    for (const existingWeekId of Array.from(cromByWeek.keys())) {
+      if (!keepSet.has(existingWeekId) || existingWeekId === weekId) {
+        cromByWeek.delete(existingWeekId);
+      }
+    }
+    cromByWeek.set(weekId, { count: cromPostsValid });
+
+    const cromTimeline = buildCromTimeline(weeksAscending, cromByWeek);
+    const resetWeekForCurrent = cromTimeline.resetByWeek.get(weekId) || weeksAscending[0] || "";
+    const counterForCurrent = cromTimeline.counterByWeek.get(weekId) || 0;
+
     const weekRows = updatedWeeks.map((row) => [
       row.weekId,
       row.startUtc,
@@ -508,32 +741,49 @@ export function WizardPage(): JSX.Element {
       row.notes
     ]);
 
-    await Promise.all([
+    if (persist) {
+      const writeTasks: Promise<void>[] = [
+        replaceTabRows(
+          client,
+          dataSpreadsheetId,
+          "Weeks",
+          ["WeekId", "StartUTC", "EndUTC", "Timezone", "SourceFileName", "CreatedUTC", "Notes"],
+          weekRows
+        ),
+        replaceTabRows(
+          client,
+          dataSpreadsheetId,
+          "WeekUserTotals",
+          ["WeekId", "Name", "TotalPoints", "ActivityLevel", "Streak"],
+          totalsRows
+        ),
+        replaceTabRows(
+          client,
+          dataSpreadsheetId,
+          "WeekBossBreakdown",
+          ["WeekId", "Name", "Boss", "Points", "Count"],
+          updatedBreakdown
+        ),
       replaceTabRows(
         client,
         dataSpreadsheetId,
-        "Weeks",
-        ["WeekId", "StartUTC", "EndUTC", "Timezone", "SourceFileName", "CreatedUTC", "Notes"],
-        weekRows
-      ),
-      replaceTabRows(
-        client,
-        dataSpreadsheetId,
-        "WeekUserTotals",
-        ["WeekId", "Name", "TotalPoints", "ActivityLevel", "Streak"],
-        totalsRows
-      ),
-      replaceTabRows(
-        client,
-        dataSpreadsheetId,
-        "WeekBossBreakdown",
-        ["WeekId", "Name", "Boss", "Points", "Count"],
-        updatedBreakdown
+        "CromWeeks",
+        ["WeekId", "CromPostsValid", "CromCounter"],
+        weeksAscending.map((week) => [
+          week,
+          String(cromByWeek.get(week)?.count || 0),
+          String(cromTimeline.counterByWeek.get(week) || 0)
+        ])
       )
-    ]);
+    ];
 
-    setStoredWeeks(updatedWeeks.map((week) => week.weekId).sort((a, b) => b.localeCompare(a)));
-    setupCacheRef.current = null;
+      await Promise.all(writeTasks);
+
+      setStoredWeeks(updatedWeeks.map((week) => week.weekId).sort((a, b) => b.localeCompare(a)));
+      setupCacheRef.current = null;
+      setCromCounter(counterForCurrent);
+      setCromResetWeekId(resetWeekForCurrent);
+    }
 
     const streakMap = new Map<string, number>();
     for (const row of historical) {
@@ -547,15 +797,32 @@ export function WizardPage(): JSX.Element {
         name: row.name,
         totalPoints: row.totalPoints
       })),
-      updatedWeeks.map((week) => week.weekId),
+      weeksAscending,
+      weekId
+    );
+    const sinceResetTotals = computeSinceResetTotals(
+      historical.map((row) => ({
+        weekId: row.weekId,
+        name: row.name,
+        totalPoints: row.totalPoints
+      })),
+      weeksAscending,
+      resetWeekForCurrent,
       weekId
     );
     const updatedRows = rows.map((row) => ({
       ...row,
       streak: streakMap.get(row.name) || 1,
-      last3WeeksTotal: last3Totals.get(row.name) || row.totalPoints
+      last3WeeksTotal: last3Totals.get(row.name) || row.totalPoints,
+      sinceCromResetTotal: sinceResetTotals.get(row.name) || row.totalPoints,
+      reached30k: reached30kByName[row.name] || false
     }));
-    return { rows: updatedRows, purgedCount };
+    return {
+      rows: updatedRows,
+      purgedCount,
+      cromCounter: counterForCurrent,
+      cromResetWeekId: resetWeekForCurrent
+    };
   }
 
   async function calculateAndSaveFromParsed(linesToUse: ParsedLine[]): Promise<void> {
@@ -567,8 +834,11 @@ export function WizardPage(): JSX.Element {
       lowMax,
       mediumMax
     });
+    const cromPostsValid = inScope.filter(
+      (line) => line.bossCanonical?.trim().toLowerCase() === "crom" && line.addNames.length > 8
+    ).length;
     const weekId = toWeekId(weekStartUtcDate);
-    const { rows: withStreak, purgedCount } = await saveWeeklyData(weekId, summary);
+    const { rows: withStreak, purgedCount } = await saveWeeklyData(weekId, summary, cromPostsValid, true);
     const dynamicBosses = [...new Set(bosses.map((boss) => boss.boss))].sort((a, b) => a.localeCompare(b));
     setBossColumns(dynamicBosses);
     setResultRows(withStreak);
@@ -578,13 +848,20 @@ export function WizardPage(): JSX.Element {
       setStatus(`Week ${weekId} calculated and saved.`);
     }
     setSelectedStoredWeek(weekId);
+    setLoadedWeekId(weekId);
   }
 
   async function runWeekFlow(): Promise<void> {
     setError("");
     setStatus("");
     lastAutoCalcRef.current = null;
-    if (rawLines.length === 0) {
+    setFlowReady(false);
+    let linesToUse = rawLines;
+    if (linesToUse.length === 0 && uploadedFile) {
+      linesToUse = await readFileLines(uploadedFile);
+      setRawLines(linesToUse);
+    }
+    if (linesToUse.length === 0) {
       setError("Upload a Timers File first.");
       return;
     }
@@ -592,10 +869,17 @@ export function WizardPage(): JSX.Element {
       setBusy(true);
       setStatus("Loading setup and parsing file...");
       const loaded = await loadSetupData();
-      const reparsed = parseCurrentFile(rawLines, loaded.users, loaded.bosses, loaded.nameAliases, loaded.bossAliases);
+      const reparsed = parseCurrentFile(
+        linesToUse,
+        loaded.users,
+        loaded.bosses,
+        loaded.nameAliases,
+        loaded.bossAliases
+      );
       setParsedLines(reparsed);
       setParseVersion((previous) => previous + 1);
       setHasParsed(true);
+      setFlowReady(true);
       setDiscardedLines(new Set());
       setIssueCursor(0);
       const localUnresolved = unresolvedIndexes(reparsed, new Set());
@@ -619,7 +903,10 @@ export function WizardPage(): JSX.Element {
     try {
       setBusy(true);
       const client = new SheetsClient(accessToken);
-      const { totalsRaw, breakdownRaw } = await loadWeekStorageBundle(client, dataSpreadsheetId);
+      const { weeks, totalsRaw, breakdownRaw, cromWeeksRaw } = await loadWeekStorageBundle(
+        client,
+        dataSpreadsheetId
+      );
       const totals = totalsRaw.filter((row) => row[0] === weekId);
       const breakdown = breakdownRaw.filter((row) => row[0] === weekId);
       const bossSet = new Set<string>();
@@ -632,6 +919,8 @@ export function WizardPage(): JSX.Element {
           activityLevel: row[3] || "Low",
           streak: Number(row[4] || 1),
           last3WeeksTotal: 0,
+          reached30k: false,
+          sinceCromResetTotal: 0,
           bossPoints: {},
           bossCounts: {}
         });
@@ -647,6 +936,8 @@ export function WizardPage(): JSX.Element {
             activityLevel: "Low",
             streak: 1,
             last3WeeksTotal: 0,
+            reached30k: false,
+            sinceCromResetTotal: 0,
             bossPoints: {},
             bossCounts: {}
           });
@@ -658,9 +949,7 @@ export function WizardPage(): JSX.Element {
       const rows = Array.from(rowMap.values()).sort(
         (a, b) => b.totalPoints - a.totalPoints || a.name.localeCompare(b.name)
       );
-      const weeksAscending = Array.from(
-        new Set(totalsRaw.map((row) => row[0]).filter((candidate): candidate is string => Boolean(candidate)))
-      ).sort((a, b) => a.localeCompare(b));
+      const weeksAscending = weeks.map((week) => week.weekId).sort((a, b) => a.localeCompare(b));
       const last3Totals = computeLast3WeekTotals(
         totalsRaw
           .filter((row) => row[0] && row[1] && row[2])
@@ -672,11 +961,30 @@ export function WizardPage(): JSX.Element {
         weeksAscending,
         weekId
       );
+      const cromTimeline = buildCromTimeline(weeksAscending, parseCromWeeks(cromWeeksRaw));
+      const resetWeekForSelected = cromTimeline.resetByWeek.get(weekId) || weeksAscending[0] || "";
+      const sinceResetTotals = computeSinceResetTotals(
+        totalsRaw
+          .filter((row) => row[0] && row[1] && row[2])
+          .map((row) => ({
+            weekId: row[0],
+            name: row[1],
+            totalPoints: Number(row[2] || 0)
+          })),
+        weeksAscending,
+        resetWeekForSelected,
+        weekId
+      );
       for (const row of rows) {
         row.last3WeeksTotal = last3Totals.get(row.name) || row.totalPoints;
+        row.sinceCromResetTotal = sinceResetTotals.get(row.name) || row.totalPoints;
+        row.reached30k = reached30kByName[row.name] || false;
       }
       setResultRows(rows);
       setBossColumns(Array.from(bossSet).sort((a, b) => a.localeCompare(b)));
+      setCromCounter(cromTimeline.counterByWeek.get(weekId) || 0);
+      setCromResetWeekId(resetWeekForSelected);
+      setLoadedWeekId(weekId);
       setStatus(`Loaded stored week ${weekId}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load week.");
@@ -694,10 +1002,14 @@ export function WizardPage(): JSX.Element {
       return;
     }
     setError("");
+    setPendingSave(false);
     try {
       setBusy(true);
       const client = new SheetsClient(accessToken);
-      const { weeks, totalsRaw, breakdownRaw } = await loadWeekStorageBundle(client, dataSpreadsheetId);
+      const { weeks, totalsRaw, breakdownRaw, cromWeeksRaw } = await loadWeekStorageBundle(
+        client,
+        dataSpreadsheetId
+      );
       if (!weeks.some((week) => week.weekId === weekId)) {
         throw new Error(`Week ${weekId} not found.`);
       }
@@ -716,7 +1028,8 @@ export function WizardPage(): JSX.Element {
         }))
         .filter((row) => row.weekId !== weekId);
 
-      recomputeStreaks(historical, updatedWeeks.map((week) => week.weekId));
+      const weeksAscending = updatedWeeks.map((week) => week.weekId);
+      recomputeStreaks(historical, weeksAscending);
 
       const totalsRows = historical
         .sort((a, b) => a.weekId.localeCompare(b.weekId) || a.name.localeCompare(b.name))
@@ -729,6 +1042,14 @@ export function WizardPage(): JSX.Element {
         ]);
 
       const updatedBreakdown = breakdownRaw.filter((row) => row[0] !== weekId);
+      const cromByWeek = parseCromWeeks(cromWeeksRaw);
+      cromByWeek.delete(weekId);
+      for (const existingWeekId of Array.from(cromByWeek.keys())) {
+        if (!updatedWeeks.some((week) => week.weekId === existingWeekId)) {
+          cromByWeek.delete(existingWeekId);
+        }
+      }
+      const cromTimeline = buildCromTimeline(weeksAscending, cromByWeek);
       const weekRows = updatedWeeks.map((row) => [
         row.weekId,
         row.startUtc,
@@ -739,7 +1060,7 @@ export function WizardPage(): JSX.Element {
         row.notes
       ]);
 
-      await Promise.all([
+      const writeTasks: Promise<void>[] = [
         replaceTabRows(
           client,
           dataSpreadsheetId,
@@ -760,16 +1081,31 @@ export function WizardPage(): JSX.Element {
           "WeekBossBreakdown",
           ["WeekId", "Name", "Boss", "Points", "Count"],
           updatedBreakdown
+        ),
+        replaceTabRows(
+          client,
+          dataSpreadsheetId,
+          "CromWeeks",
+          ["WeekId", "CromPostsValid", "CromCounter"],
+          weeksAscending.map((week) => [
+            week,
+            String(cromByWeek.get(week)?.count || 0),
+            String(cromTimeline.counterByWeek.get(week) || 0)
+          ])
         )
-      ]);
+      ];
+      await Promise.all(writeTasks);
 
       setStoredWeeks(updatedWeeks.map((week) => week.weekId).sort((a, b) => b.localeCompare(a)));
       setupCacheRef.current = null;
+      setCromCounter(cromTimeline.finalCounter);
+      setCromResetWeekId(cromTimeline.finalResetWeekId || "");
 
       if (selectedStoredWeek === weekId) {
         setSelectedStoredWeek("");
         setResultRows([]);
         setBossColumns([]);
+        setLoadedWeekId("");
       }
       setStatus(`Deleted week ${weekId}.`);
     } catch (err) {
@@ -800,9 +1136,6 @@ export function WizardPage(): JSX.Element {
       .catch((err) => {
         const message = err instanceof Error ? err.message : "Auto-calculation failed.";
         setError(message);
-        if (message === "Save cancelled by user.") {
-          setStatus("Auto-save cancelled. Use Run DKP Flow to retry.");
-        }
       })
       .finally(() => {
         setBusy(false);
@@ -816,7 +1149,8 @@ export function WizardPage(): JSX.Element {
     if (!hasSetupLoaded) {
       return "Next: load setup details.";
     }
-    if (rawLines.length === 0) {
+    const hasFile = rawLines.length > 0 || !!uploadedFile || !!fileName;
+    if (!hasFile) {
       return "Next: upload Timers file.";
     }
     if (!hasParsed) {
@@ -835,7 +1169,8 @@ export function WizardPage(): JSX.Element {
     if (busy) {
       return "Working...";
     }
-    if (rawLines.length === 0) {
+    const hasFile = rawLines.length > 0 || !!uploadedFile || !!fileName;
+    if (!hasFile) {
       return "Upload Timers File to Continue";
     }
     if (!hasParsed) {
@@ -859,7 +1194,7 @@ export function WizardPage(): JSX.Element {
         <h2>Wizard Setup</h2>
         <div className="flow-steps">
           <span className={`flow-step ${hasSetupLoaded ? "done" : ""}`}>1. Setup</span>
-          <span className={`flow-step ${rawLines.length > 0 ? "done" : ""}`}>2. File</span>
+          <span className={`flow-step ${rawLines.length > 0 || uploadedFile ? "done" : ""}`}>2. File</span>
           <span className={`flow-step ${parsedLines.length > 0 && unresolved.length === 0 ? "done" : ""}`}>
             3. Resolver
           </span>
@@ -873,6 +1208,7 @@ export function WizardPage(): JSX.Element {
               type="date"
               value={weekStartUtcDate}
               onChange={(event) => {
+                setFlowReady(false);
                 const nextValue = event.target.value;
                 if (!nextValue) {
                   setWeekStartUtcDate("");
@@ -895,7 +1231,13 @@ export function WizardPage(): JSX.Element {
           </label>
           <label>
             Input Timestamp Timezone
-            <select value={timezone} onChange={(event) => setTimezone(event.target.value)}>
+            <select
+              value={timezone}
+              onChange={(event) => {
+                setFlowReady(false);
+                setTimezone(event.target.value);
+              }}
+            >
               {timezoneOptions.map((zone) => (
                 <option key={zone} value={zone}>
                   {zone}
@@ -905,15 +1247,44 @@ export function WizardPage(): JSX.Element {
           </label>
           <label>
             Users Spreadsheet ID
-            <input value={usersSpreadsheetId} onChange={(event) => setUsersSpreadsheetId(event.target.value)} />
+            <input
+              value={usersSpreadsheetId}
+              onChange={(event) => {
+                setFlowReady(false);
+                setUsersSpreadsheetId(event.target.value);
+              }}
+            />
           </label>
           <label>
             Users Range
-            <input value={usersRange} onChange={(event) => setUsersRange(event.target.value)} />
+            <input
+              value={usersRange}
+              onChange={(event) => {
+                setFlowReady(false);
+                setUsersRange(event.target.value);
+              }}
+            />
+          </label>
+          <label>
+            Total Points Column
+            <input
+              value={usersPointsColumn}
+              onChange={(event) => {
+                setFlowReady(false);
+                setUsersPointsColumn(event.target.value.toUpperCase());
+              }}
+              placeholder="C"
+            />
           </label>
           <label>
             Data Spreadsheet ID
-            <input value={dataSpreadsheetId} onChange={(event) => setDataSpreadsheetId(event.target.value)} />
+            <input
+              value={dataSpreadsheetId}
+              onChange={(event) => {
+                setFlowReady(false);
+                setDataSpreadsheetId(event.target.value);
+              }}
+            />
           </label>
           <label>
             Timers File
@@ -954,12 +1325,43 @@ export function WizardPage(): JSX.Element {
       <section className="card">
         <h3>Exports</h3>
         <div className="actions-row">
-          <button type="button" disabled={resultRows.length === 0} onClick={() => exportMinimalCsv(resultRows, weekId)}>
+          <button
+            type="button"
+            disabled={resultRows.length === 0}
+            onClick={() => exportMinimalCsv(resultRows, weekId, cromCounter, cromResetWeekId)}
+          >
             Export Minimal CSV
           </button>
-          <button type="button" disabled={resultRows.length === 0} onClick={() => exportMinimalTxt(resultRows, weekId)}>
+          <button
+            type="button"
+            disabled={resultRows.length === 0}
+            onClick={() => exportMinimalTxt(resultRows, weekId, cromCounter, cromResetWeekId)}
+          >
             Export Minimal TXT
           </button>
+          <button
+            type="button"
+            disabled={resultRows.length === 0}
+            onClick={() => {
+              setError("");
+              copyMinimalTxt(resultRows, cromCounter, cromResetWeekId)
+                .then((ok) => {
+                  setCopyFeedback(ok ? "ok" : "fail");
+                  window.setTimeout(() => setCopyFeedback(""), 1800);
+                })
+                .catch(() => {
+                  setCopyFeedback("fail");
+                  window.setTimeout(() => setCopyFeedback(""), 1800);
+                });
+            }}
+          >
+            Copy Minimal TXT
+          </button>
+          {copyFeedback && (
+            <span className={`copy-feedback ${copyFeedback}`}>
+              {copyFeedback === "ok" ? "Copied" : "Copy failed"}
+            </span>
+          )}
           <button
             type="button"
             disabled={resultRows.length === 0}
@@ -976,6 +1378,44 @@ export function WizardPage(): JSX.Element {
 
       <section className="card">
         <h3>Week History</h3>
+        <div className="week-meta">
+          <span className="meta-label">Crom Counter</span>
+          <span className="meta-value">{cromCounter || 0}</span>
+          <span className="meta-divider">•</span>
+          <span className="meta-label">Reset Week</span>
+          <span className="meta-value">{cromResetWeekId || "N/A"}</span>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={openCromEditor}
+            aria-label="Edit Crom counter"
+            title="Edit Crom counter"
+          >
+            ✏️
+          </button>
+        </div>
+        {showCromEditor && (
+          <div className="crom-editor">
+            <label>
+              Crom Counter (0-9)
+              <input
+                type="number"
+                min="0"
+                max="9"
+                value={cromEditValue}
+                onChange={(event) => setCromEditValue(event.target.value)}
+              />
+            </label>
+            <div className="actions-row">
+              <button type="button" onClick={saveCromCounterForWeek} disabled={cromSaving}>
+                Save Crom Counter for {loadedWeekId || "Week"}
+              </button>
+              <button type="button" onClick={() => setShowCromEditor(false)} disabled={cromSaving}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
         <div className="actions-row">
           <select value={selectedStoredWeek} onChange={(event) => setSelectedStoredWeek(event.target.value)}>
             <option value="">Select stored week</option>

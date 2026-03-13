@@ -25,6 +25,10 @@ export const SHEET_SCHEMAS: TabSchema[] = [
   {
     name: "WeekBossBreakdown",
     headers: ["WeekId", "Name", "Boss", "Points", "Count"]
+  },
+  {
+    name: "CromWeeks",
+    headers: ["WeekId", "CromPostsValid", "CromCounter"]
   }
 ];
 
@@ -32,6 +36,7 @@ export const DEFAULT_CONFIG: Record<string, string> = {
   week_start: "SUN",
   activity_low_max: "4",
   activity_medium_max: "9",
-  timezone_default: "America/New_York"
+  timezone_default: "America/New_York",
+  crom_counter: "0",
+  crom_reset_weekid: ""
 };
-
