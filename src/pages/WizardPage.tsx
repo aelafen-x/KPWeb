@@ -67,6 +67,7 @@ type CromWeekEntry = {
 type CromTimeline = {
   counterByWeek: Map<string, number>;
   resetByWeek: Map<string, string>;
+  resetTriggeredByWeek: Map<string, boolean>;
   finalCounter: number;
   finalResetWeekId: string;
 };
@@ -74,14 +75,15 @@ type CromTimeline = {
 function computeSinceResetTotals(
   allRows: Last3Input[],
   weeksAscending: string[],
-  resetWeekId: string,
+  totalsStartByWeek: Map<string, string>,
   targetWeekId: string
 ): Map<string, number> {
   const endIndex = weeksAscending.indexOf(targetWeekId);
   if (endIndex === -1) {
     return new Map<string, number>();
   }
-  let startIndex = weeksAscending.indexOf(resetWeekId);
+  const startWeekId = totalsStartByWeek.get(targetWeekId) || weeksAscending[0];
+  let startIndex = weeksAscending.indexOf(startWeekId);
   if (startIndex === -1) {
     startIndex = 0;
   }
@@ -152,10 +154,12 @@ function buildCromTimeline(
 ): CromTimeline {
   const counterByWeek = new Map<string, number>();
   const resetByWeek = new Map<string, string>();
+  const resetTriggeredByWeek = new Map<string, boolean>();
   if (weeksAscending.length === 0) {
     return {
       counterByWeek,
       resetByWeek,
+      resetTriggeredByWeek,
       finalCounter: seedCounter,
       finalResetWeekId: seedResetWeekId || ""
     };
@@ -168,21 +172,43 @@ function buildCromTimeline(
     const count = entry?.count ?? 0;
     const storedCounter = entry?.counter;
     const prevCounter = counter;
+    const resetTriggered = count > 0 && prevCounter + count > 9;
     counter =
       storedCounter !== undefined ? clampCromCounter(storedCounter) : computeCromCounter(counter, count);
-    if (counter === 1 && prevCounter !== 1) {
+    if (resetTriggered) {
       currentResetWeek = weekId;
     }
     counterByWeek.set(weekId, counter);
     resetByWeek.set(weekId, currentResetWeek);
+    resetTriggeredByWeek.set(weekId, resetTriggered);
   }
 
   return {
     counterByWeek,
     resetByWeek,
+    resetTriggeredByWeek,
     finalCounter: counter,
     finalResetWeekId: currentResetWeek
   };
+}
+
+function buildTotalsStartByWeek(
+  weeksAscending: string[],
+  resetTriggeredByWeek: Map<string, boolean>
+): Map<string, string> {
+  const totalsStartByWeek = new Map<string, string>();
+  if (weeksAscending.length === 0) {
+    return totalsStartByWeek;
+  }
+  let lastResetWeek = weeksAscending[0];
+  for (const weekId of weeksAscending) {
+    const isReset = resetTriggeredByWeek.get(weekId) || false;
+    totalsStartByWeek.set(weekId, isReset ? lastResetWeek : lastResetWeek);
+    if (isReset) {
+      lastResetWeek = weekId;
+    }
+  }
+  return totalsStartByWeek;
 }
 
 function makeTimezoneOptions(): string[] {
@@ -514,6 +540,7 @@ export function WizardPage(): JSX.Element {
       );
 
       const resetWeekForLoaded = cromTimeline.resetByWeek.get(loadedWeekId) || weeksAscending[0] || "";
+      const totalsStartByWeek = buildTotalsStartByWeek(weeksAscending, cromTimeline.resetTriggeredByWeek);
       setCromCounter(cromTimeline.counterByWeek.get(loadedWeekId) || nextCounter);
       setCromResetWeekId(resetWeekForLoaded);
       setupCacheRef.current = null;
@@ -530,7 +557,7 @@ export function WizardPage(): JSX.Element {
               totalPoints: Number(row[2] || 0)
             })),
           weeksAscending,
-          resetWeekForLoaded,
+          totalsStartByWeek,
           loadedWeekId
         );
         setResultRows((previous) =>
@@ -744,6 +771,7 @@ export function WizardPage(): JSX.Element {
     clearCountersFrom(weeksAscending, cromByWeek, weekId, true);
     const cromTimeline = buildCromTimeline(weeksAscending, cromByWeek);
     const resetWeekForCurrent = cromTimeline.resetByWeek.get(weekId) || weeksAscending[0] || "";
+    const totalsStartByWeek = buildTotalsStartByWeek(weeksAscending, cromTimeline.resetTriggeredByWeek);
     const counterForCurrent = cromTimeline.counterByWeek.get(weekId) || 0;
 
     const weekRows = updatedWeeks.map((row) => [
@@ -822,7 +850,7 @@ export function WizardPage(): JSX.Element {
         totalPoints: row.totalPoints
       })),
       weeksAscending,
-      resetWeekForCurrent,
+      totalsStartByWeek,
       weekId
     );
     const updatedRows = rows.map((row) => ({
@@ -978,6 +1006,7 @@ export function WizardPage(): JSX.Element {
       );
       const cromTimeline = buildCromTimeline(weeksAscending, parseCromWeeks(cromWeeksRaw));
       const resetWeekForSelected = cromTimeline.resetByWeek.get(weekId) || weeksAscending[0] || "";
+      const totalsStartByWeek = buildTotalsStartByWeek(weeksAscending, cromTimeline.resetTriggeredByWeek);
       const sinceResetTotals = computeSinceResetTotals(
         totalsRaw
           .filter((row) => row[0] && row[1] && row[2])
@@ -987,7 +1016,7 @@ export function WizardPage(): JSX.Element {
             totalPoints: Number(row[2] || 0)
           })),
         weeksAscending,
-        resetWeekForSelected,
+        totalsStartByWeek,
         weekId
       );
       for (const row of rows) {
