@@ -75,6 +75,8 @@ export function LedgerSteps({
   const [auctionFileName, setAuctionFileName] = useState("");
   const [auctionLines, setAuctionLines] = useState<string[]>([]);
   const [discarded, setDiscarded] = useState<Set<number>>(new Set());
+  /** Valid wins the keeper chose not to count (e.g. a cancelled or re-run auction). */
+  const [notCounted, setNotCounted] = useState<Set<number>>(new Set());
   const [aliasChoice, setAliasChoice] = useState<Record<number, string>>({});
   /** Edited auction lines that have been checked (re-parsed). */
   const [lineDrafts, setLineDrafts] = useState<Record<number, string>>({});
@@ -162,6 +164,7 @@ export function LedgerSteps({
 
   const problems = wins.filter((win) => win.issues.length > 0);
   const goodWins = wins.filter((win) => win.issues.length === 0);
+  const countedWins = goodWins.filter((win) => !notCounted.has(win.lineNumber));
   const savedSpends = (ledger?.spends || []).filter((row) => row.weekId === weekId);
   const usingFile = auctionLines.length > 0;
 
@@ -174,8 +177,8 @@ export function LedgerSteps({
     [weekId, roster, ledger?.activity]
   );
   const warnings = useMemo(
-    () => checkWins(goodWins, roster, balancesBefore, prevActivity),
-    [goodWins, roster, balancesBefore, prevActivity]
+    () => checkWins(countedWins, roster, balancesBefore, prevActivity),
+    [countedWins, roster, balancesBefore, prevActivity]
   );
 
   const closedWeekIds = useMemo(
@@ -203,6 +206,7 @@ export function LedgerSteps({
     setAuctionFileName(file.name);
     setAuctionLines(text.split(/\r?\n/));
     setDiscarded(new Set());
+    setNotCounted(new Set());
     setAliasChoice({});
     setLineDrafts({});
     setTyping({});
@@ -280,7 +284,7 @@ export function LedgerSteps({
       };
       const activity = computeOwnerActivity(weekId, roster, newDkpByToon, thresholds);
       const bonuses = computeBonuses(ledger.adminBonus, activity);
-      const spends = usingFile ? goodWins.map((win) => winToSpend(weekId, win)) : savedSpends;
+      const spends = usingFile ? countedWins.map((win) => winToSpend(weekId, win)) : savedSpends;
       const spentByToon = new Map<string, number>();
       for (const spend of spends) {
         spentByToon.set(toonKey(spend.toon), (spentByToon.get(toonKey(spend.toon)) || 0) + spend.amount);
@@ -401,7 +405,7 @@ export function LedgerSteps({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [progressKey]);
 
-  const spendTotal = (usingFile ? goodWins : savedSpends).reduce((sum, row) => sum + row.amount, 0);
+  const spendTotal = (usingFile ? countedWins : savedSpends).reduce((sum, row) => sum + row.amount, 0);
 
   return (
     <>
@@ -514,20 +518,47 @@ export function LedgerSteps({
                   <th>Amount</th>
                   <th>Available on last update</th>
                   <th>Warnings</th>
+                  {usingFile && <th />}
                 </tr>
               </thead>
               <tbody>
                 {usingFile
-                  ? goodWins.map((win) => (
-                      <tr key={win.lineNumber} className={warnings.has(win.lineNumber) ? "warn-row" : ""}>
+                  ? goodWins.map((win) => {
+                      const counted = !notCounted.has(win.lineNumber);
+                      return (
+                      <tr
+                        key={win.lineNumber}
+                        className={!counted ? "skipped-row" : warnings.has(win.lineNumber) ? "warn-row" : ""}
+                      >
                         <td>{win.lineNumber}</td>
                         <td>{win.timestampRaw}</td>
                         <td>{win.toon}</td>
                         <td>{win.amount}</td>
                         <td>{balancesBefore.get(toonKey(win.toon || ""))?.available ?? 0}</td>
-                        <td>{(warnings.get(win.lineNumber) || []).join(" ")}</td>
+                        <td>{counted ? (warnings.get(win.lineNumber) || []).join(" ") : "Not counted"}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className={`count-button ${!counted ? "undo" : warnings.has(win.lineNumber) ? "warned" : ""}`}
+                            title={counted ? "Leave this win out: it won't be taken off the balance" : "Count this win again"}
+                            onClick={() =>
+                              setNotCounted((previous) => {
+                                const next = new Set(previous);
+                                if (next.has(win.lineNumber)) {
+                                  next.delete(win.lineNumber);
+                                } else {
+                                  next.add(win.lineNumber);
+                                }
+                                return next;
+                              })
+                            }
+                          >
+                            {counted ? "Don't count" : "Count it"}
+                          </button>
+                        </td>
                       </tr>
-                    ))
+                      );
+                    })
                   : savedSpends.map((spend, index) => (
                       <tr key={index}>
                         <td />
@@ -544,8 +575,11 @@ export function LedgerSteps({
         )}
         {(usingFile || savedSpends.length > 0) && (
           <p className="hint">
-            {usingFile ? goodWins.length : savedSpends.length} win(s), {spendTotal} DKP total.
-            {usingFile && warnings.size > 0 ? ` ${warnings.size} with warnings (they are still recorded).` : ""}
+            {usingFile ? countedWins.length : savedSpends.length} win(s) counted, {spendTotal} DKP total.
+            {usingFile && notCounted.size > 0 ? ` ${notCounted.size} not counted.` : ""}
+            {usingFile && warnings.size > 0
+              ? ` ${warnings.size} with warnings: they are still taken off the balance unless you click Don't count.`
+              : ""}
           </p>
         )}
       </section>
