@@ -3,6 +3,8 @@ import { useAppContext } from "./store/AppContext";
 import { LoginPage } from "./pages/LoginPage";
 import { WizardPage } from "./pages/WizardPage";
 import { AdminPage } from "./pages/AdminPage";
+import { LedgerPage } from "./pages/LedgerPage";
+import { RosterPage } from "./pages/RosterPage";
 
 function Protected({ children }: { children: JSX.Element }): JSX.Element {
   const { auth } = useAppContext();
@@ -21,6 +23,22 @@ export function App(): JSX.Element {
         element={
           <Protected>
             <WizardPage />
+          </Protected>
+        }
+      />
+      <Route
+        path="/ledger"
+        element={
+          <Protected>
+            <LedgerPage />
+          </Protected>
+        }
+      />
+      <Route
+        path="/roster"
+        element={
+          <Protected>
+            <RosterPage />
           </Protected>
         }
       />

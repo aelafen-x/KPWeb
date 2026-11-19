@@ -1,5 +1,6 @@
 import { DEFAULT_CONFIG, SHEET_SCHEMAS } from "../constants";
-import type { AliasRow, BossConfig, StoredWeek } from "../types";
+import type { AliasRow, BossConfig, RosterToon, StoredWeek } from "../types";
+import { parseRosterRows } from "./roster";
 
 type SpreadsheetMetadata = {
   sheets?: Array<{
@@ -10,6 +11,8 @@ type SpreadsheetMetadata = {
   }>;
 };
 
+export type ValueInputOption = "RAW" | "USER_ENTERED";
+
 type ValueRange = {
   range?: string;
   values?: string[][];
@@ -19,7 +22,7 @@ function encodeA1Part(value: string): string {
   return value.replace(/'/g, "''");
 }
 
-function a1(sheetName: string, range = "A:Z"): string {
+export function a1(sheetName: string, range = "A:Z"): string {
   return `'${encodeA1Part(sheetName)}'!${range}`;
 }
 
@@ -46,9 +49,10 @@ const DATA_SETUP_RANGES = {
 const WEEK_STORAGE_RANGES = {
   weeks: a1("Weeks", "A2:G"),
   totals: a1("WeekUserTotals", "A2:E"),
-  breakdown: a1("WeekBossBreakdown", "A2:E"),
-  cromWeeks: a1("CromWeeks", "A2:C")
+  breakdown: a1("WeekBossBreakdown", "A2:E")
 };
+
+export const ROSTER_RANGE = a1("Roster", "A2:W");
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -134,8 +138,13 @@ export class SheetsClient {
     return byRequestedRange;
   }
 
-  async updateRange(spreadsheetId: string, range: string, values: string[][]): Promise<void> {
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
+  async updateRange(
+    spreadsheetId: string,
+    range: string,
+    values: string[][],
+    valueInputOption: ValueInputOption = "USER_ENTERED"
+  ): Promise<void> {
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=${valueInputOption}`;
     await this.request(url, {
       method: "PUT",
       body: JSON.stringify({ range, values })
@@ -248,81 +257,6 @@ function parseAllowlistRows(rows: string[][]): string[] {
     .filter(Boolean);
 }
 
-function parseUsersRows(rows: string[][]): string[] {
-  const out: string[] = [];
-  for (const row of rows) {
-    for (const cell of row) {
-      const value = (cell || "").trim();
-      if (value) {
-        out.push(value);
-      }
-    }
-  }
-  return out;
-}
-
-function parseUsersWithTotals(
-  usersRows: string[][],
-  totalsRows: string[][]
-): { users: string[]; reached30kByName: Record<string, boolean> } {
-  const users: string[] = [];
-  const reached30kByName: Record<string, boolean> = {};
-  const max = Math.max(usersRows.length, totalsRows.length);
-  for (let index = 0; index < max; index += 1) {
-    const name = (usersRows[index]?.[0] || "").trim();
-    if (!name) {
-      continue;
-    }
-    users.push(name);
-    const raw = (totalsRows[index]?.[0] || "").toString().replace(/,/g, "").trim();
-    const value = raw ? Number(raw) : 0;
-    reached30kByName[name] = Number.isFinite(value) && value >= 30000;
-  }
-  return { users, reached30kByName };
-}
-
-function sanitizeColumnLetter(value: string): string {
-  return value.toUpperCase().replace(/[^A-Z]/g, "");
-}
-
-function buildRangeWithColumn(usersRange: string, columnLetter: string): string | null {
-  const col = sanitizeColumnLetter(columnLetter);
-  if (!col) {
-    return null;
-  }
-  let sheetPart = "";
-  let rangePart = usersRange;
-  if (usersRange.includes("!")) {
-    const split = usersRange.split("!");
-    sheetPart = split[0];
-    rangePart = split[1] || "";
-  }
-
-  const range = rangePart.trim();
-  const fullRangeMatch = range.match(/^([A-Za-z]+)(\d+):([A-Za-z]+)(\d+)$/);
-  if (fullRangeMatch) {
-    const startRow = fullRangeMatch[2];
-    const endRow = fullRangeMatch[4];
-    const colRange = `${col}${startRow}:${col}${endRow}`;
-    return sheetPart ? `${sheetPart}!${colRange}` : colRange;
-  }
-
-  const rowRangeMatch = range.match(/^([A-Za-z]+)(\d+):([A-Za-z]+)$/);
-  if (rowRangeMatch) {
-    const startRow = rowRangeMatch[2];
-    const colRange = `${col}${startRow}:${col}`;
-    return sheetPart ? `${sheetPart}!${colRange}` : colRange;
-  }
-
-  const columnOnlyMatch = range.match(/^([A-Za-z]+):([A-Za-z]+)$/);
-  if (columnOnlyMatch) {
-    const colRange = `${col}:${col}`;
-    return sheetPart ? `${sheetPart}!${colRange}` : colRange;
-  }
-
-  return null;
-}
-
 function parseBossRows(rows: string[][]): BossConfig[] {
   return rows
     .filter((row) => row[0])
@@ -370,8 +304,11 @@ export type DataSheetSetupBundle = {
 };
 
 export type SetupBundle = DataSheetSetupBundle & {
+  roster: RosterToon[];
+  /** Every roster toon (Active and Not4Gearing), used to resolve names in chat files. */
   users: string[];
-  reached30kByName: Record<string, boolean>;
+  /** Roster toons that can earn DKP. */
+  activeUsers: string[];
 };
 
 export async function loadDataSheetSetupBundle(
@@ -380,6 +317,10 @@ export async function loadDataSheetSetupBundle(
 ): Promise<DataSheetSetupBundle> {
   const ranges = Object.values(DATA_SETUP_RANGES);
   const byRange = await client.batchReadRanges(dataSpreadsheetId, ranges);
+  return parseDataSetup(byRange);
+}
+
+function parseDataSetup(byRange: Record<string, string[][]>): DataSheetSetupBundle {
   return {
     allowlist: parseAllowlistRows(byRange[DATA_SETUP_RANGES.allowlist] || []),
     bosses: parseBossRows(byRange[DATA_SETUP_RANGES.bosses] || []),
@@ -390,38 +331,15 @@ export async function loadDataSheetSetupBundle(
   };
 }
 
-export async function loadSetupBundle(
-  client: SheetsClient,
-  usersSpreadsheetId: string,
-  usersRange: string,
-  dataSpreadsheetId: string,
-  usersPointsColumn?: string
-): Promise<SetupBundle> {
-  const totalsRange = usersPointsColumn ? buildRangeWithColumn(usersRange, usersPointsColumn) : null;
-  if (totalsRange) {
-    const [byRange, dataBundle] = await Promise.all([
-      client.batchReadRanges(usersSpreadsheetId, [usersRange, totalsRange]),
-      loadDataSheetSetupBundle(client, dataSpreadsheetId)
-    ]);
-    const usersRows = byRange[usersRange] || [];
-    const totalsRows = byRange[totalsRange] || [];
-    const { users, reached30kByName } = parseUsersWithTotals(usersRows, totalsRows);
-    return {
-      ...dataBundle,
-      users,
-      reached30kByName
-    };
-  }
-
-  const [usersRows, dataBundle] = await Promise.all([
-    client.readRange(usersSpreadsheetId, usersRange),
-    loadDataSheetSetupBundle(client, dataSpreadsheetId)
-  ]);
-  const users = parseUsersRows(usersRows);
+export async function loadSetupBundle(client: SheetsClient, dataSpreadsheetId: string): Promise<SetupBundle> {
+  const ranges = [...Object.values(DATA_SETUP_RANGES), ROSTER_RANGE];
+  const byRange = await client.batchReadRanges(dataSpreadsheetId, ranges);
+  const roster = parseRosterRows(byRange[ROSTER_RANGE] || []);
   return {
-    ...dataBundle,
-    users,
-    reached30kByName: {}
+    ...parseDataSetup(byRange),
+    roster,
+    users: roster.map((row) => row.toon),
+    activeUsers: roster.filter((row) => row.status === "Active").map((row) => row.toon)
   };
 }
 
@@ -432,30 +350,19 @@ export async function loadWeekStorageBundle(
   weeks: StoredWeek[];
   totalsRaw: string[][];
   breakdownRaw: string[][];
-  cromWeeksRaw: string[][];
 }> {
   const ranges = Object.values(WEEK_STORAGE_RANGES);
   const byRange = await client.batchReadRanges(dataSpreadsheetId, ranges);
   return {
     weeks: parseWeeksRows(byRange[WEEK_STORAGE_RANGES.weeks] || []),
     totalsRaw: byRange[WEEK_STORAGE_RANGES.totals] || [],
-    breakdownRaw: byRange[WEEK_STORAGE_RANGES.breakdown] || [],
-    cromWeeksRaw: byRange[WEEK_STORAGE_RANGES.cromWeeks] || []
+    breakdownRaw: byRange[WEEK_STORAGE_RANGES.breakdown] || []
   };
 }
 
 export async function loadAllowlistEmails(client: SheetsClient, dataSpreadsheetId: string): Promise<string[]> {
   const rows = await client.readRange(dataSpreadsheetId, a1("Allowlist", "A2:A"));
   return parseAllowlistRows(rows);
-}
-
-export async function loadUsersFromRange(
-  client: SheetsClient,
-  usersSpreadsheetId: string,
-  usersRange: string
-): Promise<string[]> {
-  const rows = await client.readRange(usersSpreadsheetId, usersRange);
-  return parseUsersRows(rows);
 }
 
 export async function loadBosses(client: SheetsClient, dataSpreadsheetId: string): Promise<BossConfig[]> {
@@ -501,10 +408,11 @@ export async function replaceTabRows(
   dataSpreadsheetId: string,
   tabName: string,
   headers: string[],
-  rows: string[][]
+  rows: string[][],
+  valueInputOption: ValueInputOption = "USER_ENTERED"
 ): Promise<void> {
   await client.clearRange(dataSpreadsheetId, a1(tabName, "A:Z"));
-  await client.updateRange(dataSpreadsheetId, a1(tabName, "A1"), [headers, ...rows]);
+  await client.updateRange(dataSpreadsheetId, a1(tabName, "A1"), [headers, ...rows], valueInputOption);
 }
 
 export async function appendRows(

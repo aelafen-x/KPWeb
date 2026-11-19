@@ -38,8 +38,6 @@ export function computeWeeklySummary(
       activityLevel: "Low",
       streak: 1,
       last3WeeksTotal: 0,
-      reached30k: false,
-      sinceCromResetTotal: 0,
       bossPoints: {},
       bossCounts: {}
     });

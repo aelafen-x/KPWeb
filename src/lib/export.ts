@@ -1,6 +1,6 @@
 import type { WeekSummaryRow } from "../types";
 
-function escapeCsvCell(value: string | number): string {
+export function escapeCsvCell(value: string | number): string {
   const text = String(value ?? "");
   if (/[,"\n]/.test(text)) {
     return `"${text.replace(/"/g, '""')}"`;
@@ -8,8 +8,8 @@ function escapeCsvCell(value: string | number): string {
   return text;
 }
 
-function triggerDownload(content: string, filename: string, mimeType: string): void {
-  const blob = new Blob([content], { type: mimeType });
+export function triggerDownload(content: string | Blob, filename: string, mimeType: string): void {
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -18,18 +18,8 @@ function triggerDownload(content: string, filename: string, mimeType: string): v
   URL.revokeObjectURL(url);
 }
 
-function buildMinimalTxt(
-  rows: WeekSummaryRow[],
-  cromCounter: number,
-  cromResetWeekId: string
-): string {
-  const header = `CromCounter: ${cromCounter} (ResetWeek: ${cromResetWeekId || "N/A"})`;
-  const columns = "Name,TotalPoints,SinceResetTotal,Reached30k";
-  const body = rows.map(
-    (row) =>
-      `${row.name},${row.totalPoints},${row.sinceCromResetTotal},${row.reached30k ? "Y" : ""}`
-  );
-  return [header, columns, ...body].join("\n");
+function buildMinimalTxt(rows: WeekSummaryRow[]): string {
+  return rows.map((row) => `${row.name},${row.totalPoints}`).join("\n");
 }
 
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -49,55 +39,24 @@ async function copyToClipboard(text: string): Promise<boolean> {
   return ok;
 }
 
-export function exportMinimalCsv(
-  rows: WeekSummaryRow[],
-  weekId: string,
-  cromCounter: number,
-  cromResetWeekId: string
-): void {
-  const header = `CromCounter,${cromCounter},ResetWeek,${escapeCsvCell(cromResetWeekId || "")}`;
-  const columns = ["Name", "TotalPoints", "SinceResetTotal", "Reached30k"];
-  const lines = [header, columns.join(",")];
-  for (const row of rows) {
-    const reached = row.reached30k ? "Y" : "";
-    lines.push(
-      [row.name, row.totalPoints, row.sinceCromResetTotal, reached].map(escapeCsvCell).join(",")
-    );
-  }
+export function exportMinimalCsv(rows: WeekSummaryRow[], weekId: string): void {
+  const lines = ["Name,TotalPoints", ...rows.map((row) => `${escapeCsvCell(row.name)},${row.totalPoints}`)];
   triggerDownload(lines.join("\n"), `weekly_points_${weekId}.csv`, "text/csv");
 }
 
-export function exportMinimalTxt(
-  rows: WeekSummaryRow[],
-  weekId: string,
-  cromCounter: number,
-  cromResetWeekId: string
-): void {
-  const txt = buildMinimalTxt(rows, cromCounter, cromResetWeekId);
-  triggerDownload(txt, `weekly_points_${weekId}.txt`, "text/plain");
+export function exportMinimalTxt(rows: WeekSummaryRow[], weekId: string): void {
+  triggerDownload(buildMinimalTxt(rows), `weekly_points_${weekId}.txt`, "text/plain");
 }
 
-export async function copyMinimalTxt(
-  rows: WeekSummaryRow[],
-  cromCounter: number,
-  cromResetWeekId: string
-): Promise<boolean> {
-  const txt = buildMinimalTxt(rows, cromCounter, cromResetWeekId);
-  return copyToClipboard(txt);
+export async function copyMinimalTxt(rows: WeekSummaryRow[]): Promise<boolean> {
+  return copyToClipboard(buildMinimalTxt(rows));
 }
 
 export function exportFullCsv(rows: WeekSummaryRow[], weekId: string, bosses: string[]): void {
-  const columns = ["Name", "TotalPoints", "ActivityLevel", "Streak", "SinceResetTotal", "Reached30k", ...bosses];
+  const columns = ["Name", "TotalPoints", "ActivityLevel", "Streak", ...bosses];
   const lines = [columns.join(",")];
   for (const row of rows) {
-    const values: Array<string | number> = [
-      row.name,
-      row.totalPoints,
-      row.activityLevel,
-      row.streak,
-      row.sinceCromResetTotal,
-      row.reached30k ? "Y" : ""
-    ];
+    const values: Array<string | number> = [row.name, row.totalPoints, row.activityLevel, row.streak];
     for (const boss of bosses) {
       values.push(row.bossCounts[boss] || 0);
     }

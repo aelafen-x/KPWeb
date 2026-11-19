@@ -9,11 +9,17 @@ export function AppHeader(): JSX.Element {
   return (
     <header className="app-header">
       <div>
-        <h1>DK Weekly Points</h1>
+        <h1>DK Weekly DKP</h1>
       </div>
       <nav>
         <Link className={location.pathname === "/wizard" ? "active" : ""} to="/wizard">
           Wizard
+        </Link>
+        <Link className={location.pathname === "/ledger" ? "active" : ""} to="/ledger">
+          Weekly DKP
+        </Link>
+        <Link className={location.pathname === "/roster" ? "active" : ""} to="/roster">
+          Roster
         </Link>
         <Link className={location.pathname === "/admin" ? "active" : ""} to="/admin">
           Admin

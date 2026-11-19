@@ -2,7 +2,7 @@ import { DateTime } from "luxon";
 import type { ParsedLine, ParseIssue } from "../types";
 import { dedupePreserveOrder, normalizeBossKey, normalizeKey, splitWords } from "./normalize";
 
-type ParserLookup = {
+export type ParserLookup = {
   usersByKey: Map<string, string>;
   bossesByKey: Map<string, { boss: string; points: number }>;
   nameAliasByKey: Map<string, string>;
@@ -84,7 +84,7 @@ function parseTimestampToUtcMillis(
   return undefined;
 }
 
-function resolveName(token: string, lookup: ParserLookup): { canonical?: string; issue?: ParseIssue } {
+export function resolveName(token: string, lookup: ParserLookup): { canonical?: string; issue?: ParseIssue } {
   const key = normalizeKey(token);
   if (!key) {
     return { issue: { type: "UnknownName", token, message: "Empty name token" } };
@@ -400,6 +400,34 @@ function parseNewFormatLine(
   parsed.author = words.slice(0, bossIndex).join(" ").trim();
   applyBossAndNames(parsed, words[bossIndex], words.slice(bossIndex + 1), lookup, issues);
   return parsed;
+}
+
+/**
+ * Splits a chat export line into its timestamp and the text after it (BAND "8 Nov 2026 at 09:23 ..."
+ * or the older "November 8, 2026 9:23 AM: ..." format). Returns null when the line has no timestamp.
+ */
+export function splitChatTimestamp(
+  rawText: string,
+  timezone: string
+): { timestampRaw: string; timestampUtcMillis?: number; rest: string } | null {
+  const oldMatch = rawText.match(OLD_FORMAT_REGEX);
+  if (oldMatch) {
+    return {
+      timestampRaw: oldMatch[1],
+      timestampUtcMillis: parseTimestampToUtcMillis(oldMatch[1], timezone, OLD_TIMESTAMP_FORMATS),
+      rest: oldMatch[2].trim()
+    };
+  }
+  const newMatch = rawText.match(NEW_FORMAT_REGEX);
+  if (newMatch) {
+    const timestampRaw = newMatch[1].trim();
+    return {
+      timestampRaw,
+      timestampUtcMillis: parseTimestampToUtcMillis(timestampRaw, timezone, NEW_TIMESTAMP_FORMATS),
+      rest: newMatch[2].trim()
+    };
+  }
+  return null;
 }
 
 export function parseLine(
