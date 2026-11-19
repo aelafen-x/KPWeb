@@ -8,3 +8,5 @@ credentials.json
 .env
 
 timers_new.txt
+
+test-data/

@@ -60,7 +60,10 @@ export function LedgerPage(): JSX.Element {
   const [auctionLines, setAuctionLines] = useState<string[]>([]);
   const [discarded, setDiscarded] = useState<Set<number>>(new Set());
   const [aliasChoice, setAliasChoice] = useState<Record<number, string>>({});
+  /** Edited auction lines that have been checked (re-parsed). */
   const [lineDrafts, setLineDrafts] = useState<Record<number, string>>({});
+  /** Text being typed into a problem line, applied only on Check line / Enter. */
+  const [typing, setTyping] = useState<Record<number, string>>({});
   const [reportWeek, setReportWeek] = useState("");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -86,6 +89,9 @@ export function LedgerPage(): JSX.Element {
     setSetupData(loadedSetup);
     setLedger(loadedLedger);
     setWeekTotals(storage.totalsRaw);
+    // A week remembered from before the app took over can't be closed; jump to the first week it can.
+    const start = loadedSetup.config.ledger_start_weekid || "";
+    setWeekStart((current) => (start && (!current || current < start) ? start : current));
   }
 
   useEffect(() => {
@@ -118,6 +124,23 @@ export function LedgerPage(): JSX.Element {
       (win) => !discarded.has(win.lineNumber)
     );
   }, [auctionLines, lineDrafts, discarded, timezone, lookup, weekId]);
+
+  const winsInOtherWeeks = useMemo(() => {
+    if (auctionLines.length === 0 || wins.length > 0) {
+      return [];
+    }
+    const all = parseAuctionFile(auctionLines, timezone, lookup, {
+      startUtcMillis: Number.NEGATIVE_INFINITY,
+      endUtcMillis: Number.POSITIVE_INFINITY
+    });
+    return [
+      ...new Set(
+        all
+          .filter((win) => win.timestampUtcMillis !== undefined)
+          .map((win) => toSunday(DateTime.fromMillis(win.timestampUtcMillis!).toUTC().toISODate() || ""))
+      )
+    ].sort();
+  }, [auctionLines, wins.length, timezone, lookup]);
 
   const problems = wins.filter((win) => win.issues.length > 0);
   const goodWins = wins.filter((win) => win.issues.length === 0);
@@ -161,6 +184,7 @@ export function LedgerPage(): JSX.Element {
     setDiscarded(new Set());
     setAliasChoice({});
     setLineDrafts({});
+    setTyping({});
     setError("");
     setStatus(`Loaded ${file.name}.`);
   }
@@ -364,7 +388,11 @@ export function LedgerPage(): JSX.Element {
         <h2>Weekly DKP</h2>
         <div className="flow-steps">
           <span className={`flow-step ${timersWeek ? "done" : ""}`}>1. Timers saved</span>
-          <span className={`flow-step ${usingFile ? (problems.length === 0 ? "done" : "") : savedSpends.length ? "done" : ""}`}>
+          <span
+            className={`flow-step ${
+              usingFile ? (wins.length > 0 && problems.length === 0 ? "done" : "") : savedSpends.length ? "done" : ""
+            }`}
+          >
             2. Auction wins
           </span>
           <span className={`flow-step ${closedWeek && !timersChangedSinceClose ? "done" : ""}`}>3. Week closed</span>
@@ -427,12 +455,29 @@ export function LedgerPage(): JSX.Element {
           </p>
         )}
 
+        {usingFile && wins.length === 0 && (
+          <p className="warning-inline">
+            {winsInOtherWeeks.length > 0
+              ? `No Winner lines in the week of ${weekId}. The file has wins in the week(s) of ${winsInOtherWeeks.join(", ")}; change Week Start above.`
+              : "No Winner lines found in this file."}
+          </p>
+        )}
+
         {problems.length > 0 && (
           <div className="stack">
             <p className="error">{problems.length} line(s) need fixing before the week can be closed.</p>
             {problems.map((win) => {
               const issue = win.issues[0];
-              const draft = lineDrafts[win.lineNumber] ?? auctionLines[win.lineNumber - 1] ?? win.rawText;
+              const draft =
+                typing[win.lineNumber] ?? lineDrafts[win.lineNumber] ?? auctionLines[win.lineNumber - 1] ?? win.rawText;
+              const checkLine = () => {
+                setLineDrafts({ ...lineDrafts, [win.lineNumber]: draft });
+                setTyping((previous) => {
+                  const next = { ...previous };
+                  delete next[win.lineNumber];
+                  return next;
+                });
+              };
               return (
                 <div className="problem-line" key={win.lineNumber}>
                   <div className="line-row current">
@@ -462,8 +507,17 @@ export function LedgerPage(): JSX.Element {
                     <input
                       className="grow"
                       value={draft}
-                      onChange={(event) => setLineDrafts({ ...lineDrafts, [win.lineNumber]: event.target.value })}
+                      onChange={(event) => setTyping({ ...typing, [win.lineNumber]: event.target.value })}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          checkLine();
+                        }
+                      }}
                     />
+                    <button type="button" onClick={checkLine} disabled={typing[win.lineNumber] === undefined}>
+                      Check line
+                    </button>
                     <button
                       type="button"
                       onClick={() => setDiscarded((previous) => new Set(previous).add(win.lineNumber))}

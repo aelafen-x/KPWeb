@@ -8,7 +8,7 @@ import { WeekTable } from "../components/WeekTable";
 import { computeWeeklySummary, recomputeStreaks } from "../lib/compute";
 import { copyMinimalTxt, exportCorrectedFile, exportFullCsv, exportMinimalCsv, exportMinimalTxt } from "../lib/export";
 import { normalizeKey } from "../lib/normalize";
-import { createParserLookup, isTimestampLineStart, parseLine } from "../lib/parser";
+import { createParserLookup, isTimestampLineStart, parseLine, splitChatTimestamp } from "../lib/parser";
 import {
   SheetsClient,
   appendRows,
@@ -16,7 +16,7 @@ import {
   loadWeekStorageBundle,
   replaceTabRows
 } from "../lib/sheets";
-import { getBrowserTimezone, toWeekId, weekBoundsFromUtcSunday } from "../lib/week";
+import { getBrowserTimezone, toSunday, toWeekId, weekBoundsFromUtcSunday } from "../lib/week";
 import { useAppContext } from "../store/AppContext";
 import type { BossConfig, ParsedLine, WeekSummaryRow } from "../types";
 import type { SetupBundle } from "../lib/sheets";
@@ -191,6 +191,27 @@ export function WizardPage(): JSX.Element {
     setNameAliases(loaded.nameAliases);
     setConfig(loaded.config);
     setStoredWeeks(loaded.weeks.map((week) => week.weekId).sort((a, b) => b.localeCompare(a)));
+    // A week remembered from before the app took over the DKP balances is almost certainly stale.
+    const start = loaded.config.ledger_start_weekid || "";
+    if (start && (!weekStartUtcDate || weekStartUtcDate < start)) {
+      setWeekStartUtcDate(start);
+      setFlowReady(false);
+    }
+  }
+
+  /** Sunday week IDs that the file's timestamped lines fall in, ignoring the selected week. */
+  function weeksInFile(lines: string[]): string[] {
+    const weeks = new Set<string>();
+    for (const line of lines) {
+      if (!isTimestampLineStart(line)) {
+        continue;
+      }
+      const millis = splitChatTimestamp(line.trim(), timezone)?.timestampUtcMillis;
+      if (millis !== undefined) {
+        weeks.add(toSunday(DateTime.fromMillis(millis).toUTC().toISODate() || ""));
+      }
+    }
+    return Array.from(weeks).sort();
   }
 
   async function loadSetupData(forceRefresh = false): Promise<SetupBundle> {
@@ -634,6 +655,13 @@ export function WizardPage(): JSX.Element {
       setBusy(true);
       setStatus("Loading setup and parsing file...");
       const loaded = await loadSetupData();
+      const start = loaded.config.ledger_start_weekid || "";
+      if (start && weekStartUtcDate < start) {
+        setWeekStartUtcDate(start);
+        setStatus("");
+        setError(`Week Start was before the app took over (${start}), so it has been moved to ${start}. Check it and click Run DKP Flow again.`);
+        return;
+      }
       const reparsed = parseCurrentFile(
         linesToUse,
         loaded.users,
@@ -641,6 +669,19 @@ export function WizardPage(): JSX.Element {
         loaded.nameAliases,
         loaded.bossAliases
       );
+      if (reparsed.length === 0) {
+        // Never auto-save an empty week: it would overwrite that week's stored totals with zeros.
+        const fileWeeks = weeksInFile(linesToUse);
+        setParsedLines([]);
+        setHasParsed(false);
+        setStatus("");
+        setError(
+          fileWeeks.length > 0
+            ? `No lines in this file fall in the week of ${toWeekId(weekStartUtcDate)}. The file covers the week(s) of ${fileWeeks.join(", ")}. Change Week Start and run again.`
+            : "No timer lines found in this file."
+        );
+        return;
+      }
       setParsedLines(reparsed);
       setParseVersion((previous) => previous + 1);
       setHasParsed(true);
