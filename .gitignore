@@ -10,3 +10,7 @@ credentials.json
 timers_new.txt
 
 test-data/
+
+# Local editor / tool files
+.idea/
+.claude/launch.json
