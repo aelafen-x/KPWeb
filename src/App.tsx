@@ -1,10 +1,9 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useAppContext } from "./store/AppContext";
 import { LoginPage } from "./pages/LoginPage";
-import { WizardPage } from "./pages/WizardPage";
 import { AdminPage } from "./pages/AdminPage";
-import { LedgerPage } from "./pages/LedgerPage";
 import { RosterPage } from "./pages/RosterPage";
+import { WeeklyPage } from "./pages/WeeklyPage";
 
 function Protected({ children }: { children: JSX.Element }): JSX.Element {
   const { auth } = useAppContext();
@@ -19,18 +18,10 @@ export function App(): JSX.Element {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route
-        path="/wizard"
+        path="/weekly"
         element={
           <Protected>
-            <WizardPage />
-          </Protected>
-        }
-      />
-      <Route
-        path="/ledger"
-        element={
-          <Protected>
-            <LedgerPage />
+            <WeeklyPage />
           </Protected>
         }
       />
@@ -50,8 +41,10 @@ export function App(): JSX.Element {
           </Protected>
         }
       />
-      <Route path="*" element={<Navigate to="/wizard" replace />} />
+      {/* Old bookmarks: the Wizard and the separate Weekly DKP page are now one page. */}
+      <Route path="/wizard" element={<Navigate to="/weekly" replace />} />
+      <Route path="/ledger" element={<Navigate to="/weekly" replace />} />
+      <Route path="*" element={<Navigate to="/weekly" replace />} />
     </Routes>
   );
 }
-

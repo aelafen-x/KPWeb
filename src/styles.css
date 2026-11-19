@@ -666,3 +666,157 @@ tr.warn-row td {
     print-color-adjust: exact;
   }
 }
+
+/* ---------- Weekly DKP page (one page, four steps) ---------- */
+
+.steps {
+  display: grid;
+  gap: 1rem;
+}
+
+.week-bar {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 5;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.week-bar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.week-eyebrow {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.7;
+  font-weight: 700;
+}
+
+.week-title {
+  margin: 0;
+}
+
+.week-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.week-picker input {
+  width: auto;
+}
+
+.week-picker button {
+  padding: 0.45rem 0.65rem;
+}
+
+.stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.stepper .flow-step {
+  color: var(--text);
+  cursor: pointer;
+}
+
+.stepper .flow-step:hover:not(:disabled) {
+  background: #efd29a;
+}
+
+.flow-step.attention {
+  background: #f3c2a6;
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.settings > summary {
+  cursor: pointer;
+  font-weight: 600;
+  opacity: 0.8;
+}
+
+.settings[open] > summary {
+  margin-bottom: 0.6rem;
+}
+
+.step-card {
+  scroll-margin-top: 11rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.step-head h3 {
+  margin: 0;
+}
+
+.step-badge {
+  border: 1px solid #8e6428;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  background: #f6e5c1;
+  white-space: nowrap;
+}
+
+.step-badge.done {
+  background: #cfe6c7;
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.step-badge.attention {
+  background: #f3c2a6;
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.step-card .status-inline,
+.step-card .hint {
+  margin: 0;
+}
+
+.file-pick {
+  flex: 1 1 18rem;
+}
+
+.actions-row:has(> .file-pick) {
+  align-items: end;
+}
+
+/* The issue resolver keeps its own card; inside a step it sits flatter. */
+.step-card .card {
+  box-shadow: none;
+  border-width: 1px;
+  background: rgba(255, 249, 234, 0.75);
+}
+
+.step-card .admin-section > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .week-bar {
+    position: static;
+  }
+
+  .step-card {
+    scroll-margin-top: 1rem;
+  }
+}

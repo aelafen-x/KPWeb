@@ -1,25 +1,23 @@
 import { DateTime } from "luxon";
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import { AppHeader } from "../components/AppHeader";
-import { LineResolver } from "../components/LineResolver";
-import { StatusBanner } from "../components/StatusBanner";
-import { WeekTable } from "../components/WeekTable";
-import { computeWeeklySummary, recomputeStreaks } from "../lib/compute";
-import { copyMinimalTxt, exportCorrectedFile, exportFullCsv, exportMinimalCsv, exportMinimalTxt } from "../lib/export";
-import { normalizeKey } from "../lib/normalize";
-import { createParserLookup, isTimestampLineStart, parseLine, splitChatTimestamp } from "../lib/parser";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
+import { LineResolver } from "../LineResolver";
+import { StatusBanner } from "../StatusBanner";
+import { WeekTable } from "../WeekTable";
+import { computeWeeklySummary, recomputeStreaks } from "../../lib/compute";
+import { copyMinimalTxt, exportCorrectedFile, exportFullCsv, exportMinimalCsv, exportMinimalTxt } from "../../lib/export";
+import { normalizeKey } from "../../lib/normalize";
+import { createParserLookup, isTimestampLineStart, parseLine, splitChatTimestamp } from "../../lib/parser";
 import {
   SheetsClient,
   appendRows,
   loadSetupBundle,
   loadWeekStorageBundle,
   replaceTabRows
-} from "../lib/sheets";
-import { getBrowserTimezone, toSunday, toWeekId, weekBoundsFromUtcSunday } from "../lib/week";
-import { useAppContext } from "../store/AppContext";
-import type { BossConfig, ParsedLine, WeekSummaryRow } from "../types";
-import type { SetupBundle } from "../lib/sheets";
+} from "../../lib/sheets";
+import { toSunday, toWeekId, weekBoundsFromUtcSunday } from "../../lib/week";
+import { useAppContext } from "../../store/AppContext";
+import type { BossConfig, ParsedLine, WeekSummaryRow } from "../../types";
+import type { SetupBundle } from "../../lib/sheets";
 
 type HistoricalTotal = {
   weekId: string;
@@ -60,24 +58,27 @@ async function readFileLines(file: File): Promise<string[]> {
   return text.split(/\r?\n/);
 }
 
-function makeTimezoneOptions(): string[] {
-  const supportedValuesOf = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] })
-    .supportedValuesOf;
-  if (typeof supportedValuesOf === "function") {
-    return supportedValuesOf("timeZone");
-  }
-  return ["UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles"];
-}
+export type TimersStepProps = {
+  weekStartUtcDate: string;
+  timezone: string;
+  dataSpreadsheetId: string;
+  /** Asks the page to move the shared week (e.g. when it is before the app took over). */
+  onWeekStartChange: (weekStartUtcDate: string) => void;
+  /** Called after a week's timers are saved or deleted, so later steps reload. */
+  onSaved: (weekId: string) => void;
+};
 
-export function WizardPage(): JSX.Element {
-  const { setup, setSetup, auth } = useAppContext();
+/** Step 1: parse the boss timers chat export, resolve problem lines and save the week's points. */
+export function TimersStep({
+  weekStartUtcDate,
+  timezone,
+  dataSpreadsheetId,
+  onWeekStartChange,
+  onSaved
+}: TimersStepProps): JSX.Element {
+  const { auth } = useAppContext();
   const accessToken = auth?.accessToken || "";
   const authEmail = auth?.email?.toLowerCase() || "";
-  const [weekStartUtcDate, setWeekStartUtcDate] = useState(
-    setup?.weekStartUtcDate || DateTime.utc().startOf("week").minus({ days: 1 }).toISODate() || ""
-  );
-  const [timezone, setTimezone] = useState(setup?.timezone || getBrowserTimezone());
-  const [dataSpreadsheetId, setDataSpreadsheetId] = useState(setup?.dataSpreadsheetId || "");
   const [fileName, setFileName] = useState("");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [rawLines, setRawLines] = useState<string[]>([]);
@@ -110,8 +111,6 @@ export function WizardPage(): JSX.Element {
     data: SetupBundle;
   } | null>(null);
   const lastAutoCalcRef = useRef<string | null>(null);
-
-  const timezoneOptions = useMemo(() => makeTimezoneOptions(), []);
 
   if (!accessToken) {
     return <p>Not signed in.</p>;
@@ -194,7 +193,7 @@ export function WizardPage(): JSX.Element {
     // A week remembered from before the app took over the DKP balances is almost certainly stale.
     const start = loaded.config.ledger_start_weekid || "";
     if (start && (!weekStartUtcDate || weekStartUtcDate < start)) {
-      setWeekStartUtcDate(start);
+      onWeekStartChange(start);
       setFlowReady(false);
     }
   }
@@ -254,7 +253,6 @@ export function WizardPage(): JSX.Element {
       throw new Error("Your account is not in the Allowlist tab for this data sheet.");
     }
     if (loaded.roster.length === 0) {
-      setSetup({ weekStartUtcDate, timezone, dataSpreadsheetId });
       throw new Error("The roster is empty. Open the Roster page and import it from the DKP spreadsheet first.");
     }
     applySetupBundle(loaded);
@@ -263,11 +261,6 @@ export function WizardPage(): JSX.Element {
       setParseVersion((previous) => previous + 1);
       setHasParsed(true);
     }
-    setSetup({
-      weekStartUtcDate,
-      timezone,
-      dataSpreadsheetId
-    });
     setupCacheRef.current = {
       key: cacheKey,
       loadedAt: Date.now(),
@@ -295,7 +288,7 @@ export function WizardPage(): JSX.Element {
     setBossColumns([]);
     setParseVersion((previous) => previous + 1);
     setHasParsed(false);
-    setStatus(`Loaded ${lines.length} lines. Click Run DKP Flow to process.`);
+    setStatus(`Loaded ${lines.length} lines. Click Process timers.`);
   }
 
   function reparseAll(
@@ -635,6 +628,7 @@ export function WizardPage(): JSX.Element {
       setStatus(`Week ${weekId} calculated and saved.`);
     }
     setSelectedStoredWeek(weekId);
+    onSaved(weekId);
   }
 
   async function runWeekFlow(): Promise<void> {
@@ -657,9 +651,9 @@ export function WizardPage(): JSX.Element {
       const loaded = await loadSetupData();
       const start = loaded.config.ledger_start_weekid || "";
       if (start && weekStartUtcDate < start) {
-        setWeekStartUtcDate(start);
+        onWeekStartChange(start);
         setStatus("");
-        setError(`Week Start was before the app took over (${start}), so it has been moved to ${start}. Check it and click Run DKP Flow again.`);
+        setError(`Week Start was before the app took over (${start}), so it has been moved to ${start}. Check the week at the top and click Process timers again.`);
         return;
       }
       const reparsed = parseCurrentFile(
@@ -677,7 +671,7 @@ export function WizardPage(): JSX.Element {
         setStatus("");
         setError(
           fileWeeks.length > 0
-            ? `No lines in this file fall in the week of ${toWeekId(weekStartUtcDate)}. The file covers the week(s) of ${fileWeeks.join(", ")}. Change Week Start and run again.`
+            ? `No lines in this file fall in the week of ${toWeekId(weekStartUtcDate)}. The file covers the week(s) of ${fileWeeks.join(", ")}. Change the week at the top and process again.`
             : "No timer lines found in this file."
         );
         return;
@@ -695,13 +689,13 @@ export function WizardPage(): JSX.Element {
       }
       setStatus("All lines resolved. Auto-calculating...");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Run DKP Flow failed.");
+      setError(err instanceof Error ? err.message : "Processing the timers failed.");
     } finally {
       setBusy(false);
     }
   }
 
-  async function loadStoredWeekView(weekId: string): Promise<void> {
+  async function loadStoredWeekView(weekId: string, quiet = false): Promise<void> {
     if (!weekId) {
       return;
     }
@@ -765,7 +759,9 @@ export function WizardPage(): JSX.Element {
       }
       setResultRows(rows);
       setBossColumns(Array.from(bossSet).sort((a, b) => a.localeCompare(b)));
-      setStatus(`Loaded stored week ${weekId}.`);
+      if (!quiet) {
+        setStatus(`Loaded stored week ${weekId}.`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load week.");
     } finally {
@@ -862,6 +858,7 @@ export function WizardPage(): JSX.Element {
         setBossColumns([]);
       }
       setStatus(`Deleted week ${weekId}.`);
+      onSaved(weekId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to delete week.");
     } finally {
@@ -870,6 +867,27 @@ export function WizardPage(): JSX.Element {
   }
 
   const weekId = weekStartUtcDate ? toWeekId(weekStartUtcDate) : "";
+
+  useEffect(() => {
+    lastAutoCalcRef.current = null;
+    setFlowReady(false);
+    setParsedLines([]);
+    setHasParsed(false);
+    setDiscardedLines(new Set());
+    setResultRows([]);
+    setBossColumns([]);
+    setNot4GearingSeen([]);
+    setSelectedStoredWeek("");
+  }, [weekStartUtcDate, timezone]);
+
+  const weekIsStored = !!weekId && storedWeeks.includes(weekId);
+  useEffect(() => {
+    if (weekIsStored && resultRows.length === 0 && !busy && !hasParsed) {
+      loadStoredWeekView(weekId, true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weekId, weekIsStored]);
+
   const autoCalcKey = `${weekId}|${parseVersion}|${discardedLines.size}`;
 
   useEffect(() => {
@@ -896,170 +914,89 @@ export function WizardPage(): JSX.Element {
       });
   }, [autoCalcKey, busy, parsedLines, hasParsed, unresolved.length, canonicalUsers.length, weekStartUtcDate]);
 
+  const pointsEarned = resultRows.filter((row) => row.totalPoints > 0);
+
   function statusLine(): string {
     if (busy) {
       return "Working...";
     }
     if (!hasSetupLoaded) {
-      return "Next: load setup details.";
-    }
-    const hasFile = rawLines.length > 0 || !!uploadedFile || !!fileName;
-    if (!hasFile) {
-      return "Next: upload Timers file.";
-    }
-    if (!hasParsed) {
-      return "Next: run DKP flow to parse file.";
+      return error ? "Couldn't load the data sheet (see the message above)." : "Loading the roster...";
     }
     if (unresolved.length > 0) {
-      return `Resolver: ${unresolved.length} line(s) need attention.`;
+      return `${unresolved.length} line(s) need attention below.`;
+    }
+    if (hasParsed && resultRows.length === 0) {
+      return "All lines resolved. Saving...";
     }
     if (resultRows.length > 0) {
-      return "Week saved. You can export or review history.";
+      return weekIsStored
+        ? `Saved: ${pointsEarned.length} toons earned points this week.`
+        : `${pointsEarned.length} toons earned points.`;
     }
-    return "Ready to auto-save week.";
-  }
-
-  function primaryCtaLabel(): string {
-    if (busy) {
-      return "Working...";
+    if (rawLines.length > 0) {
+      return "File loaded. Click Process timers.";
     }
-    const hasFile = rawLines.length > 0 || !!uploadedFile || !!fileName;
-    if (!hasFile) {
-      return "Upload Timers File to Continue";
-    }
-    if (!hasParsed) {
-      return "Start Resolver";
-    }
-    if (unresolved.length > 0) {
-      return "Continue Resolver";
-    }
-    if (resultRows.length > 0) {
-      return "Run DKP Flow";
-    }
-    return "Run DKP Flow";
+    return weekIsStored ? "Timers already saved for this week. Load a file to redo them." : "Load this week's timers chat export.";
   }
 
   return (
-    <main className="page">
-      <AppHeader />
+    <section className="card step-card" id="step-timers">
+      <div className="step-head">
+        <h3>1. Boss timers</h3>
+        <span className={`step-badge ${weekIsStored && unresolved.length === 0 ? "done" : unresolved.length > 0 ? "attention" : ""}`}>
+          {weekIsStored && unresolved.length === 0 ? "Saved" : unresolved.length > 0 ? "Needs attention" : "To do"}
+        </span>
+      </div>
       <StatusBanner status={status} error={error} onClearStatus={() => setStatus("")} />
+      <div className="actions-row">
+        <label className="file-pick">
+          Timers file
+          <input type="file" accept=".txt,text/plain" onChange={onFileChange} />
+        </label>
+        <button
+          type="button"
+          className="form-primary-action"
+          onClick={runWeekFlow}
+          disabled={busy || rawLines.length === 0 || !hasSetupLoaded}
+        >
+          {busy ? "Working..." : hasParsed ? "Process again" : "Process timers"}
+        </button>
+      </div>
+      <p className="status-inline">{statusLine()}</p>
+      <p className="hint">
+        {fileName ? `File: ${fileName}. ` : ""}
+        {hasParsed ? `${parsedLines.length} line(s) in this week. ` : ""}
+        Roster: {activeUsers.length} active, {canonicalUsers.length - activeUsers.length} Not4Gearing.
+      </p>
+      {not4GearingSeen.length > 0 && (
+        <p className="warning-inline">Not4Gearing toons in this file got no points: {not4GearingSeen.join(", ")}</p>
+      )}
 
-      <section className="card">
-        <h2>Wizard Setup</h2>
-        <div className="flow-steps">
-          <span className={`flow-step ${hasSetupLoaded ? "done" : ""}`}>1. Setup</span>
-          <span className={`flow-step ${rawLines.length > 0 || uploadedFile ? "done" : ""}`}>2. File</span>
-          <span className={`flow-step ${parsedLines.length > 0 && unresolved.length === 0 ? "done" : ""}`}>
-            3. Resolver
-          </span>
-          <span className={`flow-step ${resultRows.length > 0 ? "done" : ""}`}>4. Saved</span>
-        </div>
-        <p className="status-inline">{statusLine()}</p>
-        <div className="form-grid">
-          <label>
-            Week Start (UTC Sunday only)
-            <input
-              type="date"
-              value={weekStartUtcDate}
-              onChange={(event) => {
-                setFlowReady(false);
-                const nextValue = event.target.value;
-                if (!nextValue) {
-                  setWeekStartUtcDate("");
-                  return;
-                }
-                const parsed = DateTime.fromISO(nextValue, { zone: "utc" });
-                if (!parsed.isValid) {
-                  setError("Invalid week start date.");
-                  return;
-                }
-                if (parsed.weekday !== 7) {
-                  const adjusted = parsed.minus({ days: parsed.weekday % 7 }).toISODate() || nextValue;
-                  setWeekStartUtcDate(adjusted);
-                  setStatus(`Adjusted week start to Sunday (${adjusted}).`);
-                  return;
-                }
-                setWeekStartUtcDate(nextValue);
-              }}
-            />
-          </label>
-          <label>
-            Input Timestamp Timezone
-            <select
-              value={timezone}
-              onChange={(event) => {
-                setFlowReady(false);
-                setTimezone(event.target.value);
-              }}
-            >
-              {timezoneOptions.map((zone) => (
-                <option key={zone} value={zone}>
-                  {zone}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Data Spreadsheet ID
-            <input
-              value={dataSpreadsheetId}
-              onChange={(event) => {
-                setFlowReady(false);
-                setDataSpreadsheetId(event.target.value);
-              }}
-            />
-          </label>
-          <label>
-            Timers File
-            <input type="file" accept=".txt,text/plain" onChange={onFileChange} />
-          </label>
-          <button
-            type="button"
-            className="form-primary-action"
-            onClick={runWeekFlow}
-            disabled={busy || rawLines.length === 0}
-          >
-            {primaryCtaLabel()}
-          </button>
-        </div>
-        <p className="hint">Run DKP Flow loads setup, parses file, then either opens resolver or auto-saves.</p>
-        <p className="hint">Current week ID: {weekId || "N/A"}.</p>
-        <p className="hint">
-          Roster toons: {activeUsers.length} active, {canonicalUsers.length - activeUsers.length} Not4Gearing. In-scope lines: {parsedLines.length}. Unresolved lines: {unresolved.length}
-          . File: {fileName || "None"}.
-        </p>
-      </section>
+      {unresolved.length > 0 && (
+        <LineResolver
+          allRawLines={rawLines}
+          parsedLines={parsedLines}
+          currentIssueIndex={currentIssueIndex}
+          canonicalNames={canonicalUsers}
+          canonicalBosses={bosses.map((boss) => boss.boss)}
+          onEditLine={handleEditLine}
+          onCheckLine={handleCheckLine}
+          onDiscardLine={handleDiscardLine}
+          onAddBoss={handleAddBoss}
+          onAddBossAlias={handleAddBossAlias}
+          onAddNameAlias={handleAddNameAlias}
+          onNextIssue={handleNextIssue}
+        />
+      )}
 
-      <LineResolver
-        allRawLines={rawLines}
-        parsedLines={parsedLines}
-        currentIssueIndex={currentIssueIndex}
-        canonicalNames={canonicalUsers}
-        canonicalBosses={bosses.map((boss) => boss.boss)}
-        onEditLine={handleEditLine}
-        onCheckLine={handleCheckLine}
-        onDiscardLine={handleDiscardLine}
-        onAddBoss={handleAddBoss}
-        onAddBossAlias={handleAddBossAlias}
-        onAddNameAlias={handleAddNameAlias}
-        onNextIssue={handleNextIssue}
-      />
-
-      <section className="card">
-        <h3>Exports</h3>
+      <details className="admin-section">
+        <summary>Points table and exports</summary>
         <div className="actions-row">
-          <button
-            type="button"
-            disabled={resultRows.length === 0}
-            onClick={() => exportMinimalCsv(resultRows, weekId)}
-          >
+          <button type="button" disabled={resultRows.length === 0} onClick={() => exportMinimalCsv(resultRows, weekId)}>
             Export Minimal CSV
           </button>
-          <button
-            type="button"
-            disabled={resultRows.length === 0}
-            onClick={() => exportMinimalTxt(resultRows, weekId)}
-          >
+          <button type="button" disabled={resultRows.length === 0} onClick={() => exportMinimalTxt(resultRows, weekId)}>
             Export Minimal TXT
           </button>
           <button
@@ -1081,9 +1018,7 @@ export function WizardPage(): JSX.Element {
             Copy Minimal TXT
           </button>
           {copyFeedback && (
-            <span className={`copy-feedback ${copyFeedback}`}>
-              {copyFeedback === "ok" ? "Copied" : "Copy failed"}
-            </span>
+            <span className={`copy-feedback ${copyFeedback}`}>{copyFeedback === "ok" ? "Copied" : "Copy failed"}</span>
           )}
           <button
             type="button"
@@ -1096,19 +1031,11 @@ export function WizardPage(): JSX.Element {
             Export Corrected TXT
           </button>
         </div>
-        <p className="hint">Auto-calculates when all issues are resolved (or discarded).</p>
-        {not4GearingSeen.length > 0 && (
-          <p className="warning-inline">
-            Not4Gearing toons in this file got no points: {not4GearingSeen.join(", ")}
-          </p>
-        )}
-        <p className="hint">
-          Next: open <Link to="/ledger">Weekly DKP</Link> to load auction wins, close the week and build the report.
-        </p>
-      </section>
+        <WeekTable rows={resultRows} bossColumns={bossColumns} />
+      </details>
 
-      <section className="card">
-        <h3>Week History</h3>
+      <details className="admin-section">
+        <summary>Saved timer weeks</summary>
         <div className="actions-row">
           <select value={selectedStoredWeek} onChange={(event) => setSelectedStoredWeek(event.target.value)}>
             <option value="">Select stored week</option>
@@ -1119,20 +1046,14 @@ export function WizardPage(): JSX.Element {
             ))}
           </select>
           <button type="button" onClick={() => loadStoredWeekView(selectedStoredWeek)} disabled={!selectedStoredWeek}>
-            Load Week
+            Show points
           </button>
           <button type="button" onClick={() => deleteStoredWeek(selectedStoredWeek)} disabled={!selectedStoredWeek}>
-            Delete Week
+            Delete week
           </button>
-          <Link to="/admin">Open Admin</Link>
         </div>
-      </section>
-
-      <section className="card">
-        <h3>Weekly Chart</h3>
-        <WeekTable rows={resultRows} bossColumns={bossColumns} />
-      </section>
-
-    </main>
+        <p className="hint">Only the last 20 weeks of timer points are kept. DKP balances are not affected by this.</p>
+      </details>
+    </section>
   );
 }

@@ -293,8 +293,8 @@ export function RosterPage(): JSX.Element {
       <main className="page">
         <AppHeader />
         <section className="card">
-          <p>Data Spreadsheet ID is not configured. Return to the wizard setup first.</p>
-          <Link to="/wizard">Go to Wizard</Link>
+          <p>The data spreadsheet ID is not set yet. Set it in Settings on the Weekly DKP page first.</p>
+          <Link to="/weekly">Go to Weekly DKP settings</Link>
         </section>
       </main>
     );

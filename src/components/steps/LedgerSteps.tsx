@@ -2,12 +2,11 @@ import { DateTime } from "luxon";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { toPng } from "html-to-image";
-import { AppHeader } from "../components/AppHeader";
-import { DkpReport } from "../components/DkpReport";
-import { StatusBanner } from "../components/StatusBanner";
-import { GEAR_COLUMNS } from "../constants";
-import { parseAuctionFile } from "../lib/auction";
-import { escapeCsvCell, triggerDownload } from "../lib/export";
+import { DkpReport } from "../DkpReport";
+import { StatusBanner } from "../StatusBanner";
+import { GEAR_COLUMNS } from "../../constants";
+import { parseAuctionFile } from "../../lib/auction";
+import { escapeCsvCell, triggerDownload } from "../../lib/export";
 import {
   balancesAsOf,
   buildReport,
@@ -17,24 +16,17 @@ import {
   computeOwnerActivity,
   previousOwnerActivity,
   toonKey
-} from "../lib/ledger";
-import type { LedgerBundle } from "../lib/ledgerStore";
-import { loadLedgerBundle, saveClosedWeek } from "../lib/ledgerStore";
-import { createParserLookup } from "../lib/parser";
-import { parseNumber } from "../lib/roster";
-import type { SetupBundle } from "../lib/sheets";
-import { SheetsClient, appendRows, loadSetupBundle, loadWeekStorageBundle } from "../lib/sheets";
-import { getNameSuggestions } from "../lib/suggest";
-import { reportFileName, reportTitle, toSunday, toWeekId, weekBoundsFromUtcSunday } from "../lib/week";
-import { useAppContext } from "../store/AppContext";
-import type { AuctionWin, SpendRecord } from "../types";
-
-function defaultWeek(saved?: string): string {
-  if (saved) {
-    return saved;
-  }
-  return toSunday(DateTime.utc().minus({ days: 7 }).toISODate() || "");
-}
+} from "../../lib/ledger";
+import type { LedgerBundle } from "../../lib/ledgerStore";
+import { loadLedgerBundle, saveClosedWeek } from "../../lib/ledgerStore";
+import { createParserLookup } from "../../lib/parser";
+import { parseNumber } from "../../lib/roster";
+import type { SetupBundle } from "../../lib/sheets";
+import { SheetsClient, appendRows, loadSetupBundle, loadWeekStorageBundle } from "../../lib/sheets";
+import { getNameSuggestions } from "../../lib/suggest";
+import { reportFileName, reportTitle, toSunday, toWeekId, weekBoundsFromUtcSunday } from "../../lib/week";
+import { useAppContext } from "../../store/AppContext";
+import type { AuctionWin, SpendRecord } from "../../types";
 
 function winToSpend(weekId: string, win: AuctionWin): SpendRecord {
   return {
@@ -47,12 +39,36 @@ function winToSpend(weekId: string, win: AuctionWin): SpendRecord {
   };
 }
 
-export function LedgerPage(): JSX.Element {
-  const { auth, setup, setSetup } = useAppContext();
+export type StepProgress = {
+  timersSaved: boolean;
+  auctionsReady: boolean;
+  auctionProblems: boolean;
+  closed: boolean;
+  closeStale: boolean;
+  reportReady: boolean;
+};
+
+export type LedgerStepsProps = {
+  weekStart: string;
+  timezone: string;
+  dataSpreadsheetId: string;
+  /** Bumped by the page after the timers step saves, so the week's points are reloaded. */
+  refreshKey: number;
+  onWeekStartChange: (weekStart: string) => void;
+  onProgress: (progress: StepProgress) => void;
+};
+
+/** Steps 2-4: auction wins, closing the week, and the DKP update report. */
+export function LedgerSteps({
+  weekStart,
+  timezone,
+  dataSpreadsheetId,
+  refreshKey,
+  onWeekStartChange,
+  onProgress
+}: LedgerStepsProps): JSX.Element {
+  const { auth } = useAppContext();
   const accessToken = auth?.accessToken || "";
-  const dataSpreadsheetId = setup?.dataSpreadsheetId || "";
-  const timezone = setup?.timezone || "UTC";
-  const [weekStart, setWeekStart] = useState(defaultWeek(setup?.weekStartUtcDate));
   const [setupData, setSetupData] = useState<SetupBundle | null>(null);
   const [ledger, setLedger] = useState<LedgerBundle | null>(null);
   const [weekTotals, setWeekTotals] = useState<string[][]>([]);
@@ -91,7 +107,9 @@ export function LedgerPage(): JSX.Element {
     setWeekTotals(storage.totalsRaw);
     // A week remembered from before the app took over can't be closed; jump to the first week it can.
     const start = loadedSetup.config.ledger_start_weekid || "";
-    setWeekStart((current) => (start && (!current || current < start) ? start : current));
+    if (start && (!weekStart || weekStart < start)) {
+      onWeekStartChange(start);
+    }
   }
 
   useEffect(() => {
@@ -100,7 +118,7 @@ export function LedgerPage(): JSX.Element {
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load."))
       .finally(() => setBusy(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken, dataSpreadsheetId]);
+  }, [accessToken, dataSpreadsheetId, refreshKey]);
 
   const roster = setupData?.roster || [];
   const startWeekId = setupData?.config.ledger_start_weekid || "";
@@ -164,7 +182,10 @@ export function LedgerPage(): JSX.Element {
     () => (ledger?.ledgerWeeks || []).map((week) => week.weekId).sort((a, b) => b.localeCompare(a)),
     [ledger?.ledgerWeeks]
   );
-  const shownReportWeek = reportWeek || closedWeekIds[0] || "";
+  useEffect(() => {
+    setReportWeek("");
+  }, [weekId]);
+  const shownReportWeek = reportWeek || (closedWeek ? weekId : "");
   const reportRows = useMemo(
     () =>
       shownReportWeek && ledger
@@ -220,7 +241,7 @@ export function LedgerPage(): JSX.Element {
       return;
     }
     if (!timersWeek) {
-      setError("Run this week's timers file through the Wizard first.");
+      setError("Save this week's timers first (step 1).");
       return;
     }
     if (problems.length > 0) {
@@ -358,18 +379,6 @@ export function LedgerPage(): JSX.Element {
     triggerDownload(lines.join("\n"), `${reportFileName(shownReportWeek)}.csv`, "text/csv");
   }
 
-  if (!dataSpreadsheetId) {
-    return (
-      <main className="page">
-        <AppHeader />
-        <section className="card">
-          <p>Data Spreadsheet ID is not configured. Return to the wizard setup first.</p>
-          <Link to="/wizard">Go to Wizard</Link>
-        </section>
-      </main>
-    );
-  }
-
   const nameOptions = (token: string): string[] => {
     const all = setupData?.users || [];
     const suggested = getNameSuggestions(token, all);
@@ -377,76 +386,39 @@ export function LedgerPage(): JSX.Element {
     return [...suggested, ...rest];
   };
 
+  const auctionsReady = usingFile ? wins.length > 0 && problems.length === 0 : savedSpends.length > 0 || !!closedWeek;
+  const progress: StepProgress = {
+    timersSaved: !!timersWeek,
+    auctionsReady,
+    auctionProblems: problems.length > 0,
+    closed: !!closedWeek,
+    closeStale: timersChangedSinceClose,
+    reportReady: !!closedWeek && reportRows.length > 0
+  };
+  const progressKey = JSON.stringify(progress);
+  useEffect(() => {
+    onProgress(progress);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [progressKey]);
+
   const spendTotal = (usingFile ? goodWins : savedSpends).reduce((sum, row) => sum + row.amount, 0);
 
   return (
-    <main className="page">
-      <AppHeader />
-      <StatusBanner status={status} error={error} onClearStatus={() => setStatus("")} />
-
-      <section className="card no-print">
-        <h2>Weekly DKP</h2>
-        <div className="flow-steps">
-          <span className={`flow-step ${timersWeek ? "done" : ""}`}>1. Timers saved</span>
-          <span
-            className={`flow-step ${
-              usingFile ? (wins.length > 0 && problems.length === 0 ? "done" : "") : savedSpends.length ? "done" : ""
-            }`}
-          >
-            2. Auction wins
+    <>
+      <section className="card step-card no-print" id="step-auctions">
+        <div className="step-head">
+          <h3>2. Auction wins</h3>
+          <span className={`step-badge ${problems.length > 0 ? "attention" : auctionsReady ? "done" : ""}`}>
+            {problems.length > 0 ? "Needs attention" : auctionsReady ? "Ready" : "Optional"}
           </span>
-          <span className={`flow-step ${closedWeek && !timersChangedSinceClose ? "done" : ""}`}>3. Week closed</span>
-          <span className={`flow-step ${reportRows.length > 0 ? "done" : ""}`}>4. Report</span>
         </div>
-        <div className="form-grid">
-          <label>
-            Week Start (UTC Sunday)
-            <input
-              type="date"
-              value={weekStart}
-              onChange={(event) => {
-                const sunday = toSunday(event.target.value);
-                setWeekStart(sunday);
-                if (setup) {
-                  setSetup({ ...setup, weekStartUtcDate: sunday });
-                }
-              }}
-            />
-          </label>
-          <label>
-            Auction File
+        <StatusBanner status={status} error={error} onClearStatus={() => setStatus("")} />
+        <div className="actions-row">
+          <label className="file-pick">
+            Auction file
             <input type="file" accept=".txt,text/plain" onChange={onAuctionFile} />
           </label>
-          <button
-            type="button"
-            className="form-primary-action"
-            onClick={closeWeek}
-            disabled={busy || !setupData || !timersWeek || problems.length > 0}
-          >
-            {closedWeek ? "Close week again" : "Close week"}
-          </button>
         </div>
-        <p className="hint">
-          Week {weekId || "N/A"}. Timers:{" "}
-          {timersWeek ? "saved" : <span className="warning-inline">not saved yet, run them in the <Link to="/wizard">Wizard</Link></span>}
-          . Closed: {closedWeek ? DateTime.fromISO(closedWeek.closedUtc).toLocaleString(DateTime.DATETIME_MED) : "no"}.
-          {startWeekId ? ` App took over from ${startWeekId}.` : ""}
-        </p>
-        {roster.length === 0 && setupData && (
-          <p className="warning-inline">
-            The roster is empty. <Link to="/roster">Import it</Link> before closing a week.
-          </p>
-        )}
-        {timersChangedSinceClose && (
-          <p className="warning-inline">The timers for this week were saved again after it was closed. Close it again.</p>
-        )}
-        {startWeekId && weekId && weekId < startWeekId && (
-          <p className="warning-inline">This week is before the app took over ({startWeekId}), so it can't be closed here.</p>
-        )}
-      </section>
-
-      <section className="card no-print">
-        <h3>Auction wins</h3>
         {!usingFile && (
           <p className="hint">
             {savedSpends.length > 0
@@ -458,7 +430,7 @@ export function LedgerPage(): JSX.Element {
         {usingFile && wins.length === 0 && (
           <p className="warning-inline">
             {winsInOtherWeeks.length > 0
-              ? `No Winner lines in the week of ${weekId}. The file has wins in the week(s) of ${winsInOtherWeeks.join(", ")}; change Week Start above.`
+              ? `No Winner lines in the week of ${weekId}. The file has wins in the week(s) of ${winsInOtherWeeks.join(", ")}; change the week at the top.`
               : "No Winner lines found in this file."}
           </p>
         )}
@@ -578,17 +550,57 @@ export function LedgerPage(): JSX.Element {
         )}
       </section>
 
-      <section className="card">
+      <section className="card step-card no-print" id="step-close">
+        <div className="step-head">
+          <h3>3. Close the week</h3>
+          <span className={`step-badge ${closedWeek && !timersChangedSinceClose ? "done" : timersChangedSinceClose ? "attention" : ""}`}>
+            {closedWeek && !timersChangedSinceClose ? "Closed" : timersChangedSinceClose ? "Close again" : "To do"}
+          </span>
+        </div>
+        <p className="hint">
+          Works out who was active (A), adds this week's DKP and admin bonuses, takes off the auction wins, and updates
+          every balance.
+        </p>
+        <div className="actions-row">
+          <button
+            type="button"
+            className="form-primary-action"
+            onClick={closeWeek}
+            disabled={busy || !setupData || !timersWeek || problems.length > 0 || roster.length === 0}
+          >
+            {busy ? "Working..." : closedWeek ? "Close week again" : "Close week"}
+          </button>
+          <span className="hint-inline">
+            {closedWeek
+              ? `Closed ${DateTime.fromISO(closedWeek.closedUtc).toLocaleString(DateTime.DATETIME_MED)}.`
+              : !timersWeek
+                ? "Save this week's timers first (step 1)."
+                : problems.length > 0
+                  ? "Fix the auction lines first (step 2)."
+                  : "Ready to close."}
+          </span>
+        </div>
+        {roster.length === 0 && setupData && (
+          <p className="warning-inline">
+            The roster is empty. <Link to="/roster">Import it</Link> before closing a week.
+          </p>
+        )}
+        {timersChangedSinceClose && (
+          <p className="warning-inline">The timers for this week were saved again after it was closed. Close it again.</p>
+        )}
+        {startWeekId && weekId && weekId < startWeekId && (
+          <p className="warning-inline">This week is before the app took over ({startWeekId}), so it can't be closed here.</p>
+        )}
+      </section>
+
+      <section className="card step-card" id="step-report">
+        <div className="step-head no-print">
+          <h3>4. DKP update</h3>
+          <span className={`step-badge ${reportRows.length > 0 && closedWeek ? "done" : ""}`}>
+            {reportRows.length > 0 && closedWeek ? "Ready to post" : "After closing"}
+          </span>
+        </div>
         <div className="actions-row no-print">
-          <h3>DKP update</h3>
-          <select value={shownReportWeek} onChange={(event) => setReportWeek(event.target.value)}>
-            {closedWeekIds.length === 0 && <option value="">No closed weeks yet</option>}
-            {closedWeekIds.map((id) => (
-              <option key={id} value={id}>
-                {reportTitle(id)}
-              </option>
-            ))}
-          </select>
           <button type="button" onClick={downloadPdf} disabled={!shownReportWeek}>
             Download PDF
           </button>
@@ -598,19 +610,30 @@ export function LedgerPage(): JSX.Element {
           <button type="button" onClick={downloadCsv} disabled={!shownReportWeek}>
             Download CSV
           </button>
+          {closedWeekIds.length > 0 && (
+            <select value={reportWeek} onChange={(event) => setReportWeek(event.target.value)}>
+              <option value="">{closedWeek ? "This week" : "Show an earlier week..."}</option>
+              {closedWeekIds
+                .filter((id) => id !== weekId)
+                .map((id) => (
+                  <option key={id} value={id}>
+                    {reportTitle(id)}
+                  </option>
+                ))}
+            </select>
+          )}
         </div>
         <p className="hint no-print">
-          Shows every toon of each owner who was active (A) that week. For the PDF, choose "Save as PDF" in the print
-          dialog.
+          Every toon of each owner who was active (A) that week. For the PDF, choose "Save as PDF" in the print dialog.
         </p>
         {shownReportWeek ? (
           <div className="report-scroll">
             <DkpReport ref={reportRef} title={reportTitle(shownReportWeek)} rows={reportRows} />
           </div>
         ) : (
-          <p>Close a week to see its DKP update.</p>
+          <p className="hint">Close this week to see its DKP update.</p>
         )}
       </section>
-    </main>
+    </>
   );
 }

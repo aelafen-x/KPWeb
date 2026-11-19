@@ -12,10 +12,7 @@ export function AppHeader(): JSX.Element {
         <h1>DK Weekly DKP</h1>
       </div>
       <nav>
-        <Link className={location.pathname === "/wizard" ? "active" : ""} to="/wizard">
-          Wizard
-        </Link>
-        <Link className={location.pathname === "/ledger" ? "active" : ""} to="/ledger">
+        <Link className={location.pathname === "/weekly" ? "active" : ""} to="/weekly">
           Weekly DKP
         </Link>
         <Link className={location.pathname === "/roster" ? "active" : ""} to="/roster">

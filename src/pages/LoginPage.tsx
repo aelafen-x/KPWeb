@@ -21,7 +21,7 @@ export function LoginPage(): JSX.Element {
       setStatus("Opening Google sign-in...");
       const auth = await signInWithGoogle(CLIENT_ID);
       setAuth(auth);
-      navigate("/wizard");
+      navigate("/weekly");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to sign in");
     } finally {
@@ -33,8 +33,8 @@ export function LoginPage(): JSX.Element {
   return (
     <main className="login-page">
       <section className="card login-card">
-        <h1>DK Weekly Points</h1>
-        <p>Sign in with Google to start the wizard and manage weekly points.</p>
+        <h1>DK Weekly DKP</h1>
+        <p>Sign in with Google to run the weekly DKP update.</p>
         <form onSubmit={handleSignIn} className="login-actions">
           <button type="submit" disabled={loading}>
             {loading ? "Signing in..." : "Sign In with Google"}
