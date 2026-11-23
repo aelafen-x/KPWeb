@@ -1,12 +1,13 @@
 import { DateTime } from "luxon";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { toPng } from "html-to-image";
-import { DkpReport } from "../DkpReport";
+import { toCanvas, toPng } from "html-to-image";
+import { DkpReport, REPORT_THEME } from "../DkpReport";
 import { StatusBanner } from "../StatusBanner";
 import { GEAR_COLUMNS } from "../../constants";
 import { parseAuctionFile } from "../../lib/auction";
 import { escapeCsvCell, triggerDownload } from "../../lib/export";
+import { canvasToPdf, printableAspect } from "../../lib/pdf";
 import {
   balancesAsOf,
   buildReport,
@@ -315,17 +316,33 @@ export function LedgerSteps({
     }
   }
 
-  function downloadPdf(): void {
-    const previousTitle = document.title;
-    document.title = reportFileName(shownReportWeek);
-    document.body.classList.add("printing-report");
-    const cleanup = () => {
-      document.title = previousTitle;
-      document.body.classList.remove("printing-report");
-      window.removeEventListener("afterprint", cleanup);
-    };
-    window.addEventListener("afterprint", cleanup);
-    window.print();
+  /** A one-page A4 PDF with the table filling the page width (like Sheets' "selected cells" export). */
+  async function downloadPdf(): Promise<void> {
+    if (!reportRef.current) {
+      return;
+    }
+    setBusy(true);
+    try {
+      // Stretch the rows (not the text) so the table fills the page top to bottom, like a Sheets export.
+      const sheet = reportRef.current;
+      const rowCount = sheet.querySelectorAll("tbody tr").length;
+      const spare = sheet.offsetWidth * printableAspect() - sheet.offsetHeight;
+      const perRow = rowCount > 0 && spare > 0 ? Math.min(spare / rowCount, 30) : 0;
+      sheet.style.setProperty("--row-stretch", `${perRow / 2}px`);
+      let canvas: HTMLCanvasElement;
+      try {
+        canvas = await toCanvas(sheet, { backgroundColor: REPORT_THEME.page, pixelRatio: 3 });
+      } finally {
+        sheet.style.removeProperty("--row-stretch");
+      }
+      const title = reportFileName(shownReportWeek);
+      const pdf = await canvasToPdf(canvas, { title, pageColor: REPORT_THEME.page });
+      triggerDownload(pdf, `${title}.pdf`, "application/pdf");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to create the PDF.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function downloadPng(): Promise<void> {
@@ -334,7 +351,7 @@ export function LedgerSteps({
     }
     setBusy(true);
     try {
-      const dataUrl = await toPng(reportRef.current, { backgroundColor: "#ffffff", pixelRatio: 2 });
+      const dataUrl = await toPng(reportRef.current, { backgroundColor: REPORT_THEME.page, pixelRatio: 2 });
       const blob = await (await fetch(dataUrl)).blob();
       triggerDownload(blob, `${reportFileName(shownReportWeek)}.png`, "image/png");
     } catch (err) {
@@ -658,7 +675,7 @@ export function LedgerSteps({
           )}
         </div>
         <p className="hint no-print">
-          Every toon of each owner who was active (A) that week. For the PDF, choose "Save as PDF" in the print dialog.
+          Every toon of each owner who was active (A) that week. The PDF is one A4 page with the table filling the width.
         </p>
         {shownReportWeek ? (
           <div className="report-scroll">

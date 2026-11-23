@@ -610,11 +610,13 @@ tr.skipped-row td:last-child {
 }
 
 /* The report keeps the old spreadsheet look (white sheet, class colours) in every theme. */
+/* The DKP update keeps the app's look (browns, gold, parchment) in every export. */
 .report-sheet {
   display: inline-block;
-  background: #ffffff;
-  color: #000000;
-  padding: 12px;
+  background: #2b1d12;
+  color: #2a1b0e;
+  padding: 14px;
+  border-radius: 6px;
   font-family: Arial, Helvetica, sans-serif;
 }
 
@@ -624,26 +626,36 @@ tr.skipped-row td:last-child {
   font-size: 11px;
 }
 
+/* Overrides the app's general row striping; row colours are set inline per cell. */
+.report-table tbody tr td {
+  background: #fff6e2;
+}
+
 .report-table th,
 .report-table td {
-  border: 1px solid #9e9e9e;
-  padding: 2px 5px;
+  border: 1px solid #9f7232;
+  padding: 4px 5px;
   text-align: center;
-  color: #000000;
+  color: #2a1b0e;
   position: static;
 }
 
 .report-table th {
-  background: #b7e1cd;
+  background: #be8732;
+  color: #fff5df;
   font-weight: 700;
   white-space: normal;
   max-width: 5.5rem;
   vertical-align: middle;
 }
 
-.report-table td.report-owner,
-.report-table th.report-owner {
-  background: #b7e1cd;
+/* --row-stretch is set briefly while making the PDF so the rows fill the page height. */
+.report-table td {
+  padding-top: calc(4px + var(--row-stretch, 0px));
+  padding-bottom: calc(4px + var(--row-stretch, 0px));
+}
+
+.report-table td.report-owner {
   font-weight: 700;
   text-align: left;
 }
@@ -654,52 +666,37 @@ tr.skipped-row td:last-child {
 }
 
 .report-table th.report-title {
+  background: #7a4507;
+  color: #fff5df;
+  font-family: "Cinzel", "Times New Roman", serif;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+  font-size: 14px;
+  text-align: center;
+  max-width: none;
+  padding: 7px;
+}
+
+.report-table td.report-available {
   font-weight: 700;
 }
 
-.report-table td.report-a,
-.report-table th.report-a {
-  background: #ea9999;
+/* Bolder lines between classes, and between the toon details and the A/DKP columns.
+   Set on both sides of each line so the PDF/PNG export keeps them. */
+.report-table tr.class-start td {
+  border-top: 3px solid #2b1d12;
 }
 
-.report-table td.report-available,
-.report-table th.report-available-head {
-  background: #ea9999;
-  font-weight: 700;
+.report-table tr.class-end td {
+  border-bottom: 3px solid #2b1d12;
 }
 
-@media print {
-  @page {
-    size: A4 portrait;
-    margin: 8mm;
-  }
+.report-table .report-split {
+  border-left: 3px solid #2b1d12;
+}
 
-  body.printing-report {
-    background: #ffffff;
-  }
-
-  body.printing-report * {
-    visibility: hidden;
-  }
-
-  body.printing-report .report-sheet,
-  body.printing-report .report-sheet * {
-    visibility: visible;
-  }
-
-  body.printing-report .report-sheet {
-    position: absolute;
-    left: 0;
-    top: 0;
-    padding: 0;
-    zoom: 0.62;
-  }
-
-  body.printing-report .report-table th,
-  body.printing-report .report-table td {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
+.report-table .report-split-before {
+  border-right: 3px solid #2b1d12;
 }
 
 /* ---------- Weekly DKP page (one page, four steps) ---------- */
